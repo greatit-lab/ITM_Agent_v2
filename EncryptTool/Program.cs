@@ -22,35 +22,34 @@ namespace EncryptTool
 
     class Program
     {
-        // ▼▼▼ "공용 키" (ConnectInfo.dll의 키와 100% 동일해야 함) ▼▼▼
-        private const string AES_COMMON_KEY = "greatit-lab-itm-agent-v1-secret";
-        // ▲▲▲ 완료 ▲▲▲
+        // "공용 키" (ConnectInfo.dll의 키와 100% 동일해야 함)
+        private const string AES_COMMON_KEY = "itm-agent-v1-secret";
 
         static void Main(string[] args)
         {
             Console.WriteLine("--- ITM Agent Connection.ini 암호화 생성 도구 ---");
             Console.WriteLine("배포용 Connection.ini 파일을 생성합니다.");
 
-            // -----------------------------------------------------------------
-            // ▼▼▼ 1. (구)서버의 평문 정보를 이곳에 정확하게 입력합니다. ▼▼▼
-            // -----------------------------------------------------------------
-            
+            // -----------------------------------------
+            // 1. (구)서버의 평문 정보를 이곳에 정확하게 입력합니다.
+            // -----------------------------------------
+
             // (Database)
             string dbHost = "10.0.0.1"; // (구)DB IP
             string dbPort = "5432";
             string dbUser = "userid";
             string dbPass_PLAIN = "plain_db_password"; // (구)DB 평문 암호
             string dbName = "itm";
-            
+
             // (FTPS)
             string ftpHost = "10.0.0.1"; // (구)FTP IP
             string ftpPort = "21";
             string ftpUser = "itm_agent_user";
             string ftpPass_PLAIN = "plain_ftp_password"; // (구)FTP 평문 암호
             // (ftpPath는 ConnectInfo.dll에 하드코딩하기로 함)
-            
+
             // -----------------------------------------------------------------
-            
+
             try
             {
                 // 2. DB 연결 문자열 (평문) 생성
