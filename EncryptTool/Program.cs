@@ -30,10 +30,7 @@ namespace EncryptTool
             Console.WriteLine("--- ITM Agent Connection.ini 암호화 생성 도구 ---");
             Console.WriteLine("배포용 Connection.ini 파일을 생성합니다.");
 
-            // -----------------------------------------
             // 1. (구)서버의 평문 정보를 이곳에 정확하게 입력합니다.
-            // -----------------------------------------
-
             // (Database)
             string dbHost = "10.0.0.1"; // (구)DB IP
             string dbPort = "5432";
