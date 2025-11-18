@@ -16,7 +16,15 @@ namespace ITM_Agent.ucPanel
         protected override void Dispose(bool disposing)
         {
             if (disposing && (components != null))
+            {
+                // ▼▼▼ [수정] 타이머 리소스 정리 추가 ▼▼▼
+                if (statusRefreshTimer != null)
+                {
+                    statusRefreshTimer.Dispose();
+                }
+                // ▲▲▲ [수정] 완료 ▲▲▲
                 components.Dispose();
+            }
             base.Dispose(disposing);
         }
 
@@ -27,6 +35,10 @@ namespace ITM_Agent.ucPanel
         /// </summary>
         private void InitializeComponent()
         {
+            // ▼▼▼ [수정] 타이머 컴포넌트 초기화 추가 ▼▼▼
+            this.components = new System.ComponentModel.Container();
+            this.statusRefreshTimer = new System.Windows.Forms.Timer(this.components);
+            // ▲▲▲ [수정] 완료 ▲▲▲
             this.chk_DebugMode = new System.Windows.Forms.CheckBox();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
             this.label5 = new System.Windows.Forms.Label();
@@ -38,8 +50,19 @@ namespace ITM_Agent.ucPanel
             this.label3 = new System.Windows.Forms.Label();
             this.label2 = new System.Windows.Forms.Label();
             this.chk_infoDel = new System.Windows.Forms.CheckBox();
+            this.groupBox3 = new System.Windows.Forms.GroupBox();
+            this.label6 = new System.Windows.Forms.Label();
+            this.pbDbStatus = new System.Windows.Forms.PictureBox();
+            this.lblDbHost = new System.Windows.Forms.Label();
+            this.label7 = new System.Windows.Forms.Label();
+            this.pbObjStatus = new System.Windows.Forms.PictureBox();
+            this.lblObjHost = new System.Windows.Forms.Label();
+            this.btnRefreshStatus = new System.Windows.Forms.Button();
             this.groupBox1.SuspendLayout();
             this.groupBox2.SuspendLayout();
+            this.groupBox3.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pbDbStatus)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.pbObjStatus)).BeginInit();
             this.SuspendLayout();
             // 
             // chk_DebugMode
@@ -151,10 +174,98 @@ namespace ITM_Agent.ucPanel
             this.chk_infoDel.TabIndex = 0;
             this.chk_infoDel.UseVisualStyleBackColor = true;
             // 
+            // groupBox3
+            // 
+            this.groupBox3.Controls.Add(this.btnRefreshStatus);
+            this.groupBox3.Controls.Add(this.lblObjHost);
+            this.groupBox3.Controls.Add(this.pbObjStatus);
+            this.groupBox3.Controls.Add(this.label7);
+            this.groupBox3.Controls.Add(this.lblDbHost);
+            this.groupBox3.Controls.Add(this.pbDbStatus);
+            this.groupBox3.Controls.Add(this.label6);
+            this.groupBox3.Location = new System.Drawing.Point(25, 239);
+            this.groupBox3.Name = "groupBox3";
+            this.groupBox3.Size = new System.Drawing.Size(624, 90);
+            this.groupBox3.TabIndex = 43;
+            this.groupBox3.TabStop = false;
+            this.groupBox3.Text = "● Database Connection";
+            // 
+            // label6
+            // 
+            this.label6.AutoSize = true;
+            this.label6.Location = new System.Drawing.Point(20, 30);
+            this.label6.Name = "label6";
+            this.label6.Size = new System.Drawing.Size(30, 12);
+            this.label6.TabIndex = 0;
+            this.label6.Text = "• DB:";
+            // 
+            // pbDbStatus
+            // 
+            this.pbDbStatus.BackColor = System.Drawing.Color.Gray;
+            this.pbDbStatus.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
+            this.pbDbStatus.Location = new System.Drawing.Point(120, 28);
+            this.pbDbStatus.Name = "pbDbStatus";
+            this.pbDbStatus.Size = new System.Drawing.Size(16, 16);
+            this.pbDbStatus.TabIndex = 1;
+            this.pbDbStatus.TabStop = false;
+            // 
+            // lblDbHost
+            // 
+            this.lblDbHost.AutoSize = true;
+            this.lblDbHost.Location = new System.Drawing.Point(142, 30);
+            this.lblDbHost.Name = "lblDbHost";
+            this.lblDbHost.Size = new System.Drawing.Size(81, 12);
+            this.lblDbHost.TabIndex = 2;
+            this.lblDbHost.Text = "Checking...";
+            // 
+            // label7
+            // 
+            this.label7.AutoSize = true;
+            this.label7.Location = new System.Drawing.Point(20, 58);
+            this.label7.Name = "label7";
+            this.label7.Size = new System.Drawing.Size(94, 12);
+            this.label7.TabIndex = 3;
+            this.label7.Text = "• Object Story:";
+            // 
+            // pbObjStatus
+            // 
+            this.pbObjStatus.BackColor = System.Drawing.Color.Gray;
+            this.pbObjStatus.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
+            this.pbObjStatus.Location = new System.Drawing.Point(120, 56);
+            this.pbObjStatus.Name = "pbObjStatus";
+            this.pbObjStatus.Size = new System.Drawing.Size(16, 16);
+            this.pbObjStatus.TabIndex = 4;
+            this.pbObjStatus.TabStop = false;
+            // 
+            // lblObjHost
+            // 
+            this.lblObjHost.AutoSize = true;
+            this.lblObjHost.Location = new System.Drawing.Point(142, 58);
+            this.lblObjHost.Name = "lblObjHost";
+            this.lblObjHost.Size = new System.Drawing.Size(81, 12);
+            this.lblObjHost.TabIndex = 5;
+            this.lblObjHost.Text = "Checking...";
+            // 
+            // btnRefreshStatus
+            // 
+            this.btnRefreshStatus.Location = new System.Drawing.Point(505, 41);
+            this.btnRefreshStatus.Name = "btnRefreshStatus";
+            this.btnRefreshStatus.Size = new System.Drawing.Size(95, 23);
+            this.btnRefreshStatus.TabIndex = 6;
+            this.btnRefreshStatus.Text = "Refresh";
+            this.btnRefreshStatus.UseVisualStyleBackColor = true;
+            // 
+            // statusRefreshTimer
+            // 
+            this.statusRefreshTimer.Enabled = true;
+            this.statusRefreshTimer.Interval = 60000; // 1분 (60,000ms)
+            this.statusRefreshTimer.Tick += new System.EventHandler(this.statusRefreshTimer_Tick);
+            // 
             // ucOptionPanel
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 12F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+            this.Controls.Add(this.groupBox3);
             this.Controls.Add(this.groupBox2);
             this.Controls.Add(this.groupBox1);
             this.Name = "ucOptionPanel";
@@ -163,7 +274,12 @@ namespace ITM_Agent.ucPanel
             this.groupBox1.PerformLayout();
             this.groupBox2.ResumeLayout(false);
             this.groupBox2.PerformLayout();
+            this.groupBox3.ResumeLayout(false);
+            this.groupBox3.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pbDbStatus)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.pbObjStatus)).EndInit();
             this.ResumeLayout(false);
+
         }
 
         #endregion
@@ -177,5 +293,16 @@ namespace ITM_Agent.ucPanel
         private System.Windows.Forms.Label label3;
         private System.Windows.Forms.Label label5;
         private System.Windows.Forms.CheckBox chk_PerfoMode;
+        private System.Windows.Forms.GroupBox groupBox3;
+        private System.Windows.Forms.Label label6;
+        private System.Windows.Forms.PictureBox pbDbStatus;
+        private System.Windows.Forms.Label lblDbHost;
+        private System.Windows.Forms.Label label7;
+        private System.Windows.Forms.PictureBox pbObjStatus;
+        private System.Windows.Forms.Label lblObjHost;
+        private System.Windows.Forms.Button btnRefreshStatus;
+        // ▼▼▼ [수정] 타이머 선언 ▼▼▼
+        private System.Windows.Forms.Timer statusRefreshTimer;
+        // ▲▲▲ [수정] 완료 ▲▲▲
     }
 }
