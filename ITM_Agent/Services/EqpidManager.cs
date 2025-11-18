@@ -83,7 +83,8 @@ namespace ITM_Agent.Services
             else
             {
                 logManager.LogEvent($"[EqpidManager] Eqpid found: {eqpid}");
-                UploadAgentInfoToDatabase(eqpid, settingsManager.GetEqpType());
+                // 기존 UploadAgentInfoToDatabase -> 신규 RegisterOrUpdateAgentInfo로 변경
+                RegisterOrUpdateAgentInfo(eqpid, settingsManager.GetEqpType());
             }
         }
 
@@ -115,9 +116,28 @@ namespace ITM_Agent.Services
             }
         }
 
+        // 메서드명 변경 및 로직 분리
+        private void RegisterOrUpdateAgentInfo(string eqpid, string type)
+        {
+            // (1) agent_info 테이블 업데이트 (기존 UploadAgentInfoToDatabase 로직)
+            UploadAgentInfoToDatabase(eqpid, type);
+        }
+
         private void UploadAgentInfoToDatabase(string eqpid, string type)
         {
-            string connString = DatabaseInfo.CreateDefault().GetConnectionString();
+            // Connection.ini를 읽도록 수정된 DatabaseInfo.cs를 호출
+            string connString;
+            try
+            {
+                connString = DatabaseInfo.CreateDefault().GetConnectionString();
+            }
+            catch (Exception ex)
+            {
+                logManager.LogError($"[EqpidManager] Failed to get ConnectionString from Connection.ini: {ex.Message}");
+                MessageBox.Show($"Connection.ini 파일에서 DB 접속 정보를 읽는 데 실패했습니다. 프로그램을 종료합니다.\n\n{ex.Message}", "치명적 오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(1);
+                return;
+            }
 
             var currentInfo = new
             {
