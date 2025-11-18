@@ -120,7 +120,7 @@ namespace ITM_Agent.Services
             // IP 주소 패턴(예: 10.0.0.1)을 찾아서 "*.*.*.1"로 변경합니다.
             return _ipMaskRegex.Replace(message, "*.*.*.$4");
         }
-        
+
         private void WriteLogWithRotation(string message, string fileName)
         {
             // 로그 파일에 쓰기 전에 IP 마스킹 적용
