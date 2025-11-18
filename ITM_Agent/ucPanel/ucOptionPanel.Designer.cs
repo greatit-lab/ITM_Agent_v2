@@ -290,16 +290,15 @@ namespace ITM_Agent.ucPanel
         private System.Windows.Forms.Label label3;
         private System.Windows.Forms.Label label5;
         private System.Windows.Forms.CheckBox chk_PerfoMode;
-        private System.Windows.Forms.GroupBox groupBox3;
-        private System.Windows.Forms.Label label6;
-        private System.Windows.Forms.PictureBox pbDbStatus;
-        private System.Windows.Forms.Label lblDbHost;
-        private System.Windows.Forms.Label label7;
-        private System.Windows.Forms.PictureBox pbObjStatus;
-        private System.Windows.Forms.Label lblObjHost;
-        private System.Windows.Forms.Button btnRefreshStatus;
-        // ▼▼▼ [수정] 타이머 선언 ▼▼▼
+        // 타이머 선언
         private System.Windows.Forms.Timer statusRefreshTimer;
-        // ▲▲▲ [수정] 완료 ▲▲▲
+        private System.Windows.Forms.GroupBox groupBox3;
+        private System.Windows.Forms.Button btnRefreshStatus;
+        private System.Windows.Forms.Label lblObjHost;
+        private System.Windows.Forms.PictureBox pbObjStatus;
+        private System.Windows.Forms.Label label7;
+        private System.Windows.Forms.Label lblDbHost;
+        private System.Windows.Forms.PictureBox pbDbStatus;
+        private System.Windows.Forms.Label label6;
     }
 }
