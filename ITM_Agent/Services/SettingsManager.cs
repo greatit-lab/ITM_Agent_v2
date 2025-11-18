@@ -31,6 +31,13 @@ namespace ITM_Agent.Services
             EnsureSettingsFileExists();
         }
 
+        // AutoRunOnStart 속성 (Agent 섹션)
+        public bool AutoRunOnStart
+        {
+            get => GetValueFromSection("Agent", "AutoRunOnStart") == "1";
+            set => SetValueToSection("Agent", "AutoRunOnStart", value ? "1" : "0");
+        }
+
         // DebugMode 속성 추가
         public bool IsDebugMode
         {
