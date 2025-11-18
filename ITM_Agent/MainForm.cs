@@ -494,26 +494,25 @@ namespace ITM_Agent
 
             if (result == DialogResult.Yes)
             {
-                PerformQuit(); 
+                PerformQuit();
             }
         }
 
         private void PerformQuit()
         {
             logManager?.LogEvent("[MainForm] Quit requested.");
-            
+
             try
             {
                 fileWatcherManager?.StopWatchers();
-                fileWatcherManager = null; 
+                fileWatcherManager = null;
 
                 lampLifeService?.Stop();
-                lampLifeService = null; 
+                lampLifeService = null;
 
-                // ▼▼▼ [추가] ConfigUpdateService 타이머 중지 ▼▼▼
+                // ConfigUpdateService 타이머 중지
                 configUpdateService?.Dispose();
                 configUpdateService = null;
-                // ▲▲▲ [추가] 완료 ▲▲▲
 
                 infoCleaner?.Dispose();
                 infoCleaner = null;
@@ -564,7 +563,7 @@ namespace ITM_Agent
             // (3) ucConfigurationPanel 에서 현재 Target/Folder/Regex 등이 모두 세팅되었는지 확인
             bool isReady = ucConfigPanel.IsReadyToRun();
 
-            // ▼▼▼ [수정] AutoRunOnStart 플래그 확인 로직 추가 ▼▼▼
+            // AutoRunOnStart 플래그 확인 로직 추가
             if (settingsManager.AutoRunOnStart && isReady)
             {
                 // (4.1) 자동 실행 플래그가 켜져 있으면 즉시 Run 호출
@@ -586,7 +585,6 @@ namespace ITM_Agent
                     UpdateMainStatus("Stopped!", Color.Red);
                 }
             }
-            // ▲▲▲ [수정] 완료 ▲▲▲
         }
 
         private void RefreshUI()
@@ -606,7 +604,7 @@ namespace ITM_Agent
             settingsManager.ResetExceptEqpid();
             MessageBox.Show("Settings 초기화 완료 (Eqpid 제외)", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-            RefreshUI(); 
+            RefreshUI();
         }
 
         private void OpenMenuItem_Click(object sender, EventArgs e)
@@ -621,7 +619,7 @@ namespace ITM_Agent
                         settingsManager.LoadFromFile(openFileDialog.FileName);
                         MessageBox.Show("새로운 Settings.ini 파일이 로드되었습니다.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                        RefreshUI(); 
+                        RefreshUI();
                     }
                     catch (Exception ex)
                     {
@@ -691,7 +689,7 @@ namespace ITM_Agent
 
         private void OptionPanel_DebugModeChanged(bool isDebug)
         {
-            isDebugMode = isDebug;                               
+            isDebugMode = isDebug;
             fileWatcherManager.UpdateDebugMode(isDebugMode);
 
             if (isDebugMode)
@@ -751,6 +749,7 @@ namespace ITM_Agent
         public MainForm()
             : this(new SettingsManager(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini")))
         {
+            // 추가 동작 없음
         }
 
         private void tsm_AboutInfo_Click(object sender, EventArgs e)
@@ -761,7 +760,7 @@ namespace ITM_Agent
             }
         }
 
-        // ▼▼▼ [추가] ConfigUpdateService가 호출할 공개 메서드 ▼▼▼
+        // ConfigUpdateService가 호출할 공개 메서드
         public void TriggerRestartCycle()
         {
             if (InvokeRequired)
@@ -770,33 +769,32 @@ namespace ITM_Agent
                 return;
             }
 
-            _ = RestartAsync(); 
+            _ = RestartAsync();
         }
 
         private async Task RestartAsync()
         {
             logManager.LogEvent("[MainForm] RestartCycle triggered by ConfigUpdateService.");
-            
+
             if (btn_Stop.Enabled)
             {
                 logManager.LogEvent("[MainForm] Calling Stop logic...");
-                PerformStopLogic(); 
+                PerformStopLogic();
             }
 
             logManager.LogEvent("[MainForm] Waiting 10 seconds before auto-run...");
             
-            await Task.Delay(10000); 
+            await Task.Delay(10000);
 
             if (btn_Run.Enabled)
             {
                 logManager.LogEvent("[MainForm] Calling Run logic (AutoRun)...");
-                PerformRunLogic(); 
+                PerformRunLogic();
             }
             else
             {
                 logManager.LogEvent("[MainForm] AutoRun canceled (Button disabled or settings invalid).");
             }
         }
-        // ▲▲▲ [추가] 완료 ▲▲▲
     }
 }
