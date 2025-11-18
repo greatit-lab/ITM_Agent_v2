@@ -54,7 +54,7 @@ namespace ITM_Agent.Services
             _pollTimer = new System.Threading.Timer(
                 async (_) => await CheckForConfigurationUpdatesAsync(),
                 null,
-                TimeSpan.FromSeconds(10), 
+                TimeSpan.FromSeconds(10),
                 TimeSpan.FromMilliseconds(POLL_INTERVAL_MS)
             );
 
@@ -84,7 +84,7 @@ namespace ITM_Agent.Services
                     _logManager.LogError($"[ConfigUpdateService] Cannot poll. Failed to read Connection.ini: {ex.Message}");
                     return;
                 }
-                
+
                 using (var conn = new NpgsqlConnection(cs))
                 {
                     await conn.OpenAsync();
@@ -166,7 +166,7 @@ namespace ITM_Agent.Services
                 using (var conn = new NpgsqlConnection(oldConnectionString))
                 {
                     await conn.OpenAsync();
-                    
+
                     // 요청하신 새 스키마(v2) 쿼리
                     const string sqlFetchNew = @"
                         SELECT new_db_host, new_db_user, new_db_pw, new_db_port,
@@ -272,7 +272,8 @@ namespace ITM_Agent.Services
                 {
                     // (Connection.ini가 방금 바뀌었으므로 FtpsInfo.CreateDefault()를 다시 호출)
                     newFtpHost = FtpsInfo.CreateDefault().Host;
-                } catch { }
+                }
+                catch { }
 
                 _logManager.LogEvent($"[ConfigUpdateService] Confirming update success to NEW DB ({newDbHost})...");
 
