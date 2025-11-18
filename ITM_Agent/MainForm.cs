@@ -22,9 +22,8 @@ namespace ITM_Agent
         private InfoRetentionCleaner infoCleaner;
         private LampLifeService lampLifeService;
 
-        // ▼▼▼ [추가] ConfigUpdateService 필드 ▼▼▼
+        // ConfigUpdateService 필드
         private ConfigUpdateService configUpdateService;
-        // ▲▲▲ [추가] 완료 ▲▲▲
 
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
@@ -71,7 +70,7 @@ namespace ITM_Agent
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            // ▼▼▼ [수정] DB 접속 준비가 완료된 후(생성자 이후) WarmUp 실행 ▼▼▼
+            // DB 접속 준비가 완료된 후(생성자 이후) WarmUp 실행
             PerformanceWarmUp.Run();
         }
 
@@ -102,22 +101,21 @@ namespace ITM_Agent
 
             // FileWatcherManager 생성 (SettingsManager, LogManager, 디버그 모드 플래그)
             fileWatcherManager = new FileWatcherManager(settingsManager, logManager, isDebugMode);
-            
-            // ▼▼▼ [수정] EQPID 초기화 (이 시점에서 Connection.ini는 준비 완료됨) ▼▼▼
+
+            // EQPID 초기화 (이 시점에서 Connection.ini는 준비 완료됨)
             eqpidManager = new EqpidManager(settingsManager, logManager, VersionInfo);
             eqpidManager.InitializeEqpid(); // (내부적으로 (구)DB의 agent_info 업데이트)
-            
+
             string eqpid = settingsManager.GetEqpid();
             if (!string.IsNullOrEmpty(eqpid))
             {
                 ProceedWithMainFunctionality(eqpid);
 
-                // ▼▼▼ [추가] Eqpid 로드 후 ConfigUpdateService 시작 ▼▼▼
+                // Eqpid 로드 후 ConfigUpdateService 시작
                 // (MainForm, 즉 'this'를 전달하여 Stop/Run 사이클 트리거 가능)
                 configUpdateService = new ConfigUpdateService(settingsManager, logManager, this, eqpid);
-                // ▲▲▲ [추가] 완료 ▲▲▲
             }
-            
+
             // 기존에 없던 InfoRetentionCleaner 즉시 실행
             infoCleaner = new InfoRetentionCleaner(settingsManager);
 
@@ -129,7 +127,7 @@ namespace ITM_Agent
 
             InitializeTrayIcon();
             this.FormClosing += MainForm_FormClosing;
-            
+
             fileWatcherManager.InitializeWatchers();
 
             btn_Run.Click += btn_Run_Click;
@@ -160,7 +158,7 @@ namespace ITM_Agent
 
             trayMenu.Items.Add(new ToolStripSeparator());
 
-            /* ▼ Tray 전용 핸들러 연결 ▼ */
+            /* Tray 전용 핸들러 연결 */
             runItem = new ToolStripMenuItem("Run", null, Tray_Run_Click);
             stopItem = new ToolStripMenuItem("Stop", null, Tray_Stop_Click);
             quitItem = new ToolStripMenuItem("Quit", null, Tray_Quit_Click);
@@ -210,6 +208,7 @@ namespace ITM_Agent
             if (quitItem != null) quitItem.Enabled = btn_Quit.Enabled;
         }
 
+        // 자동화를 위해 폼을 잠시 복원하는 public 메서드
         public void ShowTemporarilyForAutomation()
         {
             if (InvokeRequired)
@@ -218,17 +217,22 @@ namespace ITM_Agent
                 return;
             }
 
+            // 폼이 다른 창에 가려지지 않도록 최상위로 설정
             this.TopMost = true;
 
+            // 폼이 숨겨져 있을 때만 보이도록 처리
             if (!this.Visible)
             {
                 this.Show();
                 this.WindowState = FormWindowState.Normal;
             }
+
+            // 항상 최상위로 가져와 포커스를 확보
             this.Activate();
             this.BringToFront();
         }
 
+        // 자동화 완료 후 폼을 다시 트레이로 숨기는 public 메서드
         public void HideToTrayAfterAutomation()
         {
             if (InvokeRequired)
@@ -237,6 +241,8 @@ namespace ITM_Agent
                 return;
             }
             this.Hide();
+
+            // TopMost 속성을 원래대로 복원
             this.TopMost = false;
         }
 
