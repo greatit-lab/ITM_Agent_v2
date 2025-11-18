@@ -4,7 +4,8 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json; // (FTP 정보 JSON 직렬화)
-using Npgsql; // (NpgsqlConnectionStringBuilder)
+using Npgsql;
+using ConnectInfo;
 
 namespace EncryptTool
 {
@@ -22,9 +23,6 @@ namespace EncryptTool
 
     class Program
     {
-        // "공용 키" (ConnectInfo.dll의 키와 100% 동일해야 함)
-        private const string AES_COMMON_KEY = "itm-agent-v1-secret";
-
         static void Main(string[] args)
         {
             Console.WriteLine("--- ITM Agent Connection.ini 암호화 생성 도구 ---");
@@ -72,8 +70,8 @@ namespace EncryptTool
                 string ftpConfigString = JsonConvert.SerializeObject(ftpConfig);
 
                 // 4. 각각 공용 키(AES)로 암호화
-                string encryptedDbConfig = EncryptAES(dbConfigString, AES_COMMON_KEY);
-                string encryptedFtpConfig = EncryptAES(ftpConfigString, AES_COMMON_KEY);
+                string encryptedDbConfig = EncryptAES(dbConfigString, AgentCryptoConfig.AES_COMMON_KEY);
+                string encryptedFtpConfig = EncryptAES(ftpConfigString, AgentCryptoConfig.AES_COMMON_KEY);
 
                 // 5. 새로운 Connection.ini 파일 내용 생성
                 StringBuilder sb = new StringBuilder();
