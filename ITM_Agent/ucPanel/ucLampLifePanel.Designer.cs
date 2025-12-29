@@ -1,4 +1,4 @@
-// ITM_Agnet/ucPanel/ucLampLifePanel.Designer.cs
+// ITM_Agent/ucPanel/ucLampLifePanel.Designer.cs
 namespace ITM_Agent.ucPanel
 {
     partial class ucLampLifePanel
@@ -19,26 +19,21 @@ namespace ITM_Agent.ucPanel
         private void InitializeComponent()
         {
             this.groupBox1 = new System.Windows.Forms.GroupBox();
+            this.lblInfo = new System.Windows.Forms.Label();
             this.btnManualCollect = new System.Windows.Forms.Button();
             this.lblLastCollect = new System.Windows.Forms.Label();
             this.label4 = new System.Windows.Forms.Label();
-            this.numInterval = new System.Windows.Forms.NumericUpDown();
-            this.label3 = new System.Windows.Forms.Label();
-            this.label2 = new System.Windows.Forms.Label();
             this.chkEnable = new System.Windows.Forms.CheckBox();
             this.label1 = new System.Windows.Forms.Label();
             this.groupBox1.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.numInterval)).BeginInit();
             this.SuspendLayout();
             // 
             // groupBox1
             // 
+            this.groupBox1.Controls.Add(this.lblInfo);
             this.groupBox1.Controls.Add(this.btnManualCollect);
             this.groupBox1.Controls.Add(this.lblLastCollect);
             this.groupBox1.Controls.Add(this.label4);
-            this.groupBox1.Controls.Add(this.numInterval);
-            this.groupBox1.Controls.Add(this.label3);
-            this.groupBox1.Controls.Add(this.label2);
             this.groupBox1.Controls.Add(this.chkEnable);
             this.groupBox1.Controls.Add(this.label1);
             this.groupBox1.Location = new System.Drawing.Point(25, 21);
@@ -48,13 +43,23 @@ namespace ITM_Agent.ucPanel
             this.groupBox1.TabStop = false;
             this.groupBox1.Text = "● Lamp Life Collector Settings";
             // 
+            // lblInfo
+            // 
+            this.lblInfo.AutoSize = true;
+            this.lblInfo.ForeColor = System.Drawing.Color.Gray;
+            this.lblInfo.Location = new System.Drawing.Point(40, 55);
+            this.lblInfo.Name = "lblInfo";
+            this.lblInfo.Size = new System.Drawing.Size(433, 12);
+            this.lblInfo.TabIndex = 8;
+            this.lblInfo.Text = "※ Runs UI Automation once at start, then syncs with DB every 1 hour.";
+            // 
             // btnManualCollect
             // 
             this.btnManualCollect.Location = new System.Drawing.Point(458, 94);
             this.btnManualCollect.Name = "btnManualCollect";
             this.btnManualCollect.Size = new System.Drawing.Size(140, 21);
             this.btnManualCollect.TabIndex = 7;
-            this.btnManualCollect.Text = "Collect Now";
+            this.btnManualCollect.Text = "Collect Now (UI)";
             this.btnManualCollect.UseVisualStyleBackColor = true;
             this.btnManualCollect.Click += new System.EventHandler(this.btnManualCollect_Click);
             // 
@@ -77,51 +82,10 @@ namespace ITM_Agent.ucPanel
             this.label4.TabIndex = 5;
             this.label4.Text = "• Last Collection:";
             // 
-            // numInterval
-            // 
-            this.numInterval.Location = new System.Drawing.Point(528, 61);
-            this.numInterval.Maximum = new decimal(new int[] {
-            1440,
-            0,
-            0,
-            0});
-            this.numInterval.Minimum = new decimal(new int[] {
-            1,
-            0,
-            0,
-            0});
-            this.numInterval.Name = "numInterval";
-            this.numInterval.Size = new System.Drawing.Size(70, 21);
-            this.numInterval.TabIndex = 4;
-            this.numInterval.Value = new decimal(new int[] {
-            60,
-            0,
-            0,
-            0});
-            this.numInterval.ValueChanged += new System.EventHandler(this.numInterval_ValueChanged);
-            // 
-            // label3
-            // 
-            this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(20, 66);
-            this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(115, 12);
-            this.label3.TabIndex = 3;
-            this.label3.Text = "• Collection Interval";
-            // 
-            // label2
-            // 
-            this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(472, 66);
-            this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(50, 12);
-            this.label2.TabIndex = 2;
-            this.label2.Text = "minutes";
-            // 
             // chkEnable
             // 
             this.chkEnable.AutoSize = true;
-            this.chkEnable.Location = new System.Drawing.Point(583, 31);
+            this.chkEnable.Location = new System.Drawing.Point(250, 32);
             this.chkEnable.Name = "chkEnable";
             this.chkEnable.Size = new System.Drawing.Size(15, 14);
             this.chkEnable.TabIndex = 1;
@@ -133,9 +97,9 @@ namespace ITM_Agent.ucPanel
             this.label1.AutoSize = true;
             this.label1.Location = new System.Drawing.Point(20, 33);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(185, 12);
+            this.label1.Size = new System.Drawing.Size(215, 12);
             this.label1.TabIndex = 0;
-            this.label1.Text = "• Enable Lamp Life Data Polling";
+            this.label1.Text = "• Enable Lamp Life Data Collection";
             // 
             // ucLampLifePanel
             // 
@@ -146,7 +110,6 @@ namespace ITM_Agent.ucPanel
             this.Size = new System.Drawing.Size(676, 340);
             this.groupBox1.ResumeLayout(false);
             this.groupBox1.PerformLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.numInterval)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -156,11 +119,9 @@ namespace ITM_Agent.ucPanel
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.CheckBox chkEnable;
         private System.Windows.Forms.Label label1;
-        private System.Windows.Forms.NumericUpDown numInterval;
-        private System.Windows.Forms.Label label3;
-        private System.Windows.Forms.Label label2;
         private System.Windows.Forms.Button btnManualCollect;
         private System.Windows.Forms.Label lblLastCollect;
         private System.Windows.Forms.Label label4;
+        private System.Windows.Forms.Label lblInfo;
     }
 }
