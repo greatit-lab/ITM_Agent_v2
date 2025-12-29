@@ -14,13 +14,14 @@ using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
 using Microsoft.Win32; // 레지스트리 접근용
 using Npgsql;
+using System.ServiceProcess; // 윈도우 서비스 확인용
 
 namespace ITM_Agent.Services
 {
     public struct LampInfo
     {
-        public string LampName; // (구 LampId) 화면상 이름 (예: Lamp 1)
-        public int LampNo;      // (신규) 장비 DB의 고유 ID (예: 4)
+        public string LampName;
+        public int LampNo;
         public string Age;
         public string LifeSpan;
         public string LastChanged;
@@ -36,8 +37,7 @@ namespace ITM_Agent.Services
         private readonly object _lock = new object();
         private readonly string PROCESS_NAME;
 
-        // 주기: 1시간
-        private const int UPDATE_INTERVAL_MS = 60 * 60 * 1000;
+        private const int UPDATE_INTERVAL_MS = 60 * 60 * 1000; // 1시간
 
         public event Action<bool, DateTime> CollectionCompleted;
 
@@ -58,32 +58,30 @@ namespace ITM_Agent.Services
                 _isRunning = true;
                 _logManager.LogEvent("[LampLifeService] Service Started.");
 
-                // 1. DB 스키마 마이그레이션 (lamp_id -> lamp_name, lamp_no 추가)
                 MigrateDatabaseSchema();
 
-                // 2. 비동기로 초기화 작업 및 주기적 작업 시작
                 Task.Run(async () =>
                 {
-                    // [Step 1] UI Automation 1회 실행 (초기 데이터 적재)
+                    // [Step 1] UI Automation 1회 실행
                     _logManager.LogEvent("[LampLifeService] Executing Initial UI Automation...");
                     bool uiSuccess = await ExecuteUiCollectionAsync();
 
-                    // [Step 2] MSSQL 접속 및 매핑 (Time Matching)
+                    // [Step 2] MSSQL 접속 및 매핑
                     if (uiSuccess)
                     {
                         _logManager.LogEvent("[LampLifeService] UI Collection done. Starting MSSQL Mapping...");
-                        await SyncWithEquipmentDatabaseAsync(true); // true = Initial Mapping Mode
+                        await SyncWithEquipmentDatabaseAsync(true);
                     }
                     else
                     {
                         _logManager.LogError("[LampLifeService] Initial UI Collection failed. Skipping MSSQL mapping.");
                     }
 
-                    // [Step 3] 주기적 MSSQL 폴링 스케줄러 시작 (1시간 간격)
+                    // [Step 3] 주기적 MSSQL 폴링 시작
                     _schedular = new System.Threading.Timer(async _ =>
                     {
                         if (!_isRunning) return;
-                        await SyncWithEquipmentDatabaseAsync(false); // false = Update Mode
+                        await SyncWithEquipmentDatabaseAsync(false);
                     }, null, UPDATE_INTERVAL_MS, UPDATE_INTERVAL_MS);
                 });
             }
@@ -101,13 +99,9 @@ namespace ITM_Agent.Services
             }
         }
 
-        /// <summary>
-        /// [Step 1] 기존 UI 자동화 로직 (1회성 실행용)
-        /// </summary>
         public async Task<bool> ExecuteUiCollectionAsync()
         {
             var collectedLamps = new List<LampInfo>();
-
             try
             {
                 _mainForm.ShowTemporarilyForAutomation();
@@ -120,16 +114,19 @@ namespace ITM_Agent.Services
                     mainWindow.SetForeground();
                     await Task.Delay(500);
 
-                    // UI 조작 (Processing -> System -> Lamps 탭)
                     var processingButton = FindButton(mainWindow, "Processing", "25003");
-                    if (processingButton == null) throw new Exception("'Processing' button not found.");
-                    processingButton.Click();
-                    await Task.Delay(500);
+                    if (processingButton != null)
+                    {
+                        processingButton.Click();
+                        await Task.Delay(500);
+                    }
 
                     var systemButton = FindButton(mainWindow, "System", "25004");
-                    if (systemButton == null) throw new Exception("'System' button not found.");
-                    systemButton.Click();
-                    await Task.Delay(500);
+                    if (systemButton != null)
+                    {
+                        systemButton.Click();
+                        await Task.Delay(500);
+                    }
 
                     var tabControl = FindElementWithRetry(mainWindow, cf => cf.ByControlType(ControlType.Tab));
                     var lampsTab = FindElementWithRetry(tabControl, cf => cf.ByName("Lamps").And(cf.ByControlType(ControlType.TabItem)))?.AsTabItem();
@@ -148,7 +145,7 @@ namespace ITM_Agent.Services
                                 {
                                     collectedLamps.Add(new LampInfo
                                     {
-                                        LampName = cells[0].Name, // UI상의 이름
+                                        LampName = cells[0].Name,
                                         Age = cells[1].Name,
                                         LifeSpan = cells[2].Name,
                                         LastChanged = cells[4].Name
@@ -157,8 +154,7 @@ namespace ITM_Agent.Services
                             }
                         }
                     }
-                    // 복귀
-                    processingButton.Click();
+                    if (processingButton != null) processingButton.Click();
                 }
             }
             catch (Exception ex)
@@ -173,17 +169,13 @@ namespace ITM_Agent.Services
 
             if (collectedLamps.Count > 0)
             {
-                UploadToPostgres(collectedLamps); // 1차 저장 (lamp_no는 null 상태)
+                UploadToPostgres(collectedLamps);
                 CollectionCompleted?.Invoke(true, DateTime.Now);
                 return true;
             }
             return false;
         }
 
-        /// <summary>
-        /// [Step 2 & 3] 장비 MSSQL 접속 및 데이터 동기화
-        /// </summary>
-        /// <param name="isInitialMapping">true: 이름-시간 매칭하여 ID 찾기 / false: ID로 최신 시간 업데이트</param>
         private async Task SyncWithEquipmentDatabaseAsync(bool isInitialMapping)
         {
             try
@@ -191,7 +183,7 @@ namespace ITM_Agent.Services
                 string connectionString = FindMssqlConnectionString();
                 if (string.IsNullOrEmpty(connectionString))
                 {
-                    _logManager.LogError("[LampLifeService] Could not find a valid Local MSSQL instance.");
+                    _logManager.LogError("[LampLifeService] CRITICAL: Could not determine MSSQL Connection String. Please check server status (osql -L).");
                     return;
                 }
 
@@ -201,34 +193,42 @@ namespace ITM_Agent.Services
                 {
                     await conn.OpenAsync();
 
-                    // 장비 DB에서 최근 50건 로그 조회
-                    // (테이블명 tblLampChangeLog 사용)
-                    string query = @"
-                        SELECT TOP 50 LogTime, LampID 
-                        FROM tblLampChangeLog 
-                        ORDER BY LogTime DESC";
-
+                    string query = "SELECT TOP 50 LogTime, LampID FROM tblLampChangeLog ORDER BY LogTime DESC";
                     var mssqlLogs = new List<(DateTime LogTime, int LampID)>();
+
                     using (var cmd = new SqlCommand(query, conn))
                     using (var reader = await cmd.ExecuteReaderAsync())
                     {
                         while (await reader.ReadAsync())
                         {
-                            if (!reader.IsDBNull(0) && !reader.IsDBNull(1))
+                            try
                             {
-                                mssqlLogs.Add((reader.GetDateTime(0), reader.GetInt32(1)));
+                                // ▼▼▼ [수정] 안전한 형변환 (Convert 사용) ▼▼▼
+                                // DB 컬럼이 tinyint, smallint, bigint 무엇이든 int로 변환
+                                // DB 컬럼이 datetime, datetime2, smalldatetime 무엇이든 DateTime으로 변환
+                                if (reader["LogTime"] != DBNull.Value && reader["LampID"] != DBNull.Value)
+                                {
+                                    DateTime logTime = Convert.ToDateTime(reader["LogTime"]);
+                                    int lampId = Convert.ToInt32(reader["LampID"]);
+                                    mssqlLogs.Add((logTime, lampId));
+                                }
+                            }
+                            catch (Exception castEx)
+                            {
+                                // 데이터 1건 변환 실패는 로그 남기고 건너뜀 (전체 중단 방지)
+                                _logManager.LogDebug($"[LampLifeService] Data conversion skipped for a row: {castEx.Message}");
                             }
                         }
                     }
 
-                    if (mssqlLogs.Count == 0)
+                    if (mssqlLogs.Count > 0)
+                    {
+                        await UpdatePostgresWithMssqlData(mssqlLogs, isInitialMapping);
+                    }
+                    else
                     {
                         _logManager.LogEvent("[LampLifeService] No logs found in Equipment DB.");
-                        return;
                     }
-
-                    // PostgreSQL 데이터와 비교 및 업데이트
-                    await UpdatePostgresWithMssqlData(mssqlLogs, isInitialMapping);
                 }
             }
             catch (Exception ex)
@@ -245,7 +245,6 @@ namespace ITM_Agent.Services
                 await pgConn.OpenAsync();
                 string eqpid = _settingsManager.GetEqpid();
 
-                // 현재 저장된 데이터 조회
                 var currentData = new List<(string LampName, int? LampNo, DateTime LastChanged)>();
                 using (var cmd = new NpgsqlCommand("SELECT lamp_name, lamp_no, last_changed FROM public.eqp_lamp_life WHERE eqpid = @eqpid", pgConn))
                 {
@@ -254,10 +253,7 @@ namespace ITM_Agent.Services
                     {
                         while (await reader.ReadAsync())
                         {
-                            string name = reader.GetString(0);
-                            int? no = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
-                            DateTime changed = reader.GetDateTime(2);
-                            currentData.Add((name, no, changed));
+                            currentData.Add((reader.GetString(0), reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1), reader.GetDateTime(2)));
                         }
                     }
                 }
@@ -266,12 +262,9 @@ namespace ITM_Agent.Services
                 {
                     if (isMappingMode)
                     {
-                        // [매핑 모드] 시간(초 단위까지)이 일치하는 항목을 찾아 LampID(lamp_no) 업데이트
                         var match = mssqlLogs.FirstOrDefault(m => Math.Abs((m.LogTime - pgRow.LastChanged).TotalSeconds) < 2);
-
                         if (match.LampID > 0)
                         {
-                            // 매핑 발견! lamp_no 업데이트
                             using (var updateCmd = new NpgsqlCommand("UPDATE public.eqp_lamp_life SET lamp_no = @no WHERE eqpid = @eqpid AND lamp_name = @name", pgConn))
                             {
                                 updateCmd.Parameters.AddWithValue("@no", match.LampID);
@@ -284,40 +277,23 @@ namespace ITM_Agent.Services
                     }
                     else
                     {
-                        // [업데이트 모드] lamp_no가 있는 항목에 대해, MSSQL의 더 최신 로그가 있는지 확인
                         if (pgRow.LampNo.HasValue)
                         {
-                            var latestLog = mssqlLogs
-                                .Where(m => m.LampID == pgRow.LampNo.Value)
-                                .OrderByDescending(m => m.LogTime)
-                                .FirstOrDefault();
-
+                            var latestLog = mssqlLogs.Where(m => m.LampID == pgRow.LampNo.Value).OrderByDescending(m => m.LogTime).FirstOrDefault();
                             if (latestLog.LampID > 0 && latestLog.LogTime > pgRow.LastChanged)
                             {
-                                // 새로운 교체 이력 발견 -> 업데이트
                                 int newAge = (int)(DateTime.Now - latestLog.LogTime).TotalHours;
+                                DateTime cleanLastChanged = TruncateToSeconds(latestLog.LogTime);
+                                DateTime cleanAgentTime = TruncateToSeconds(DateTime.Now);
 
-                                // ▼▼▼ [수정] ts(수집시간)도 업데이트하고, 초 단위로 절삭(Truncate) ▼▼▼
-                                string updateSql = @"
-                                    UPDATE public.eqp_lamp_life 
-                                    SET last_changed = @last_changed, 
-                                        age_hour = @age, 
-                                        ts = @ts,
-                                        serv_ts = NOW()::timestamp(0)
-                                    WHERE eqpid = @eqpid AND lamp_no = @no";
-
+                                string updateSql = @"UPDATE public.eqp_lamp_life SET last_changed = @last_changed, age_hour = @age, ts = @ts, serv_ts = NOW()::timestamp(0) WHERE eqpid = @eqpid AND lamp_no = @no";
                                 using (var updateCmd = new NpgsqlCommand(updateSql, pgConn))
                                 {
-                                    // 소수점 절삭 (깔끔한 저장)
-                                    DateTime cleanLastChanged = TruncateToSeconds(latestLog.LogTime);
-                                    DateTime cleanAgentTime = TruncateToSeconds(DateTime.Now);
-
                                     updateCmd.Parameters.AddWithValue("@last_changed", cleanLastChanged);
                                     updateCmd.Parameters.AddWithValue("@age", newAge);
-                                    updateCmd.Parameters.AddWithValue("@ts", cleanAgentTime); // 최신 수집 시간 반영
+                                    updateCmd.Parameters.AddWithValue("@ts", cleanAgentTime);
                                     updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
                                     updateCmd.Parameters.AddWithValue("@no", pgRow.LampNo.Value);
-
                                     await updateCmd.ExecuteNonQueryAsync();
                                     _logManager.LogEvent($"[LampLifeService] Updated '{pgRow.LampName}' (ID:{pgRow.LampNo}) : Changed {cleanLastChanged}");
                                 }
@@ -330,9 +306,10 @@ namespace ITM_Agent.Services
 
         private string FindMssqlConnectionString()
         {
-            string instanceName = null;
-            string hostName = Environment.MachineName;
+            string foundInstance = null;
+            string machineName = Environment.MachineName;
 
+            // 1. Registry 검색
             try
             {
                 using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL"))
@@ -343,23 +320,107 @@ namespace ITM_Agent.Services
                         {
                             if (name.IndexOf("SQLSERVER", StringComparison.OrdinalIgnoreCase) >= 0)
                             {
-                                instanceName = name;
+                                foundInstance = name;
+                                _logManager.LogEvent($"[LampLifeService] Found MSSQL Instance (Registry): {foundInstance}");
                                 break;
                             }
-                        }
-                        if (instanceName == null && key.GetValueNames().Length > 0)
-                        {
-                            instanceName = key.GetValueNames()[0];
                         }
                     }
                 }
             }
             catch { }
 
-            if (string.IsNullOrEmpty(instanceName)) instanceName = "SQLEXPRESS";
+            // 2. Windows Service 검색
+            if (string.IsNullOrEmpty(foundInstance))
+            {
+                try
+                {
+                    var services = ServiceController.GetServices();
+                    foreach (var service in services)
+                    {
+                        if (service.ServiceName.StartsWith("MSSQL$", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string instancePart = service.ServiceName.Substring(6);
+                            if (instancePart.IndexOf("SQLSERVER", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                foundInstance = instancePart;
+                                _logManager.LogEvent($"[LampLifeService] Found MSSQL Instance (Service): {foundInstance}");
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
 
-            string dataSource = $"{hostName}\\{instanceName}";
+            // 3. Command Line (osql -L / sqlcmd -L) 실행 및 파싱
+            if (string.IsNullOrEmpty(foundInstance))
+            {
+                _logManager.LogEvent("[LampLifeService] Registry/Service search failed. Trying 'sqlcmd -L'...");
+                foundInstance = GetInstanceFromCommandLine(machineName);
+            }
+
+            if (string.IsNullOrEmpty(foundInstance))
+            {
+                _logManager.LogError($"[LampLifeService] Failed to detect any SQL Instance containing 'SQLSERVER' on host {machineName}.");
+                return null;
+            }
+
+            // [수정] 호스트 이름 '.' (로컬) 사용
+            string dataSource = $".\\{foundInstance}";
             return $"Data Source={dataSource};Initial Catalog=N2000_MEASURE;Integrated Security=True;TrustServerCertificate=True;";
+        }
+
+        private string GetInstanceFromCommandLine(string targetMachineName)
+        {
+            string found = null;
+            string[] commands = { "sqlcmd", "osql" };
+
+            foreach (var cmd in commands)
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = cmd,
+                        Arguments = "-L",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using (Process p = Process.Start(psi))
+                    {
+                        if (p != null)
+                        {
+                            string output = p.StandardOutput.ReadToEnd();
+                            p.WaitForExit(3000);
+
+                            var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var line in lines)
+                            {
+                                string trimmed = line.Trim();
+                                if (trimmed.IndexOf(targetMachineName, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                    trimmed.IndexOf("SQLSERVER", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    int slashIdx = trimmed.IndexOf('\\');
+                                    if (slashIdx >= 0)
+                                    {
+                                        found = trimmed.Substring(slashIdx + 1).Trim();
+                                        _logManager.LogEvent($"[LampLifeService] Found Instance via {cmd}: {found}");
+                                        return found;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logManager.LogDebug($"[LampLifeService] '{cmd} -L' failed: {ex.Message}");
+                }
+            }
+            return null;
         }
 
         private void MigrateDatabaseSchema()
@@ -423,15 +484,12 @@ namespace ITM_Agent.Services
                         cmd.Parameters.Add("@life", NpgsqlTypes.NpgsqlDbType.Integer);
                         cmd.Parameters.Add("@changed", NpgsqlTypes.NpgsqlDbType.Timestamp);
 
-                        // ▼▼▼ [수정] 현재 시간을 초 단위로 절삭하여 생성 ▼▼▼
                         DateTime cleanNow = TruncateToSeconds(DateTime.Now);
 
                         foreach (var lamp in lamps)
                         {
                             cmd.Parameters["@eqpid"].Value = eqpid;
                             cmd.Parameters["@name"].Value = lamp.LampName;
-
-                            // [수정] 절삭된 시간 사용
                             cmd.Parameters["@ts"].Value = cleanNow;
 
                             if (int.TryParse(lamp.Age, out int age)) cmd.Parameters["@age"].Value = age;
@@ -441,10 +499,7 @@ namespace ITM_Agent.Services
                             else cmd.Parameters["@life"].Value = 0;
 
                             if (DateTime.TryParse(lamp.LastChanged, out DateTime changed))
-                            {
-                                // [수정] LastChanged도 절삭 (선택 사항이지만 깔끔함을 위해)
                                 cmd.Parameters["@changed"].Value = TruncateToSeconds(changed);
-                            }
                             else cmd.Parameters["@changed"].Value = DBNull.Value;
 
                             cmd.ExecuteNonQuery();
@@ -455,9 +510,6 @@ namespace ITM_Agent.Services
             }
         }
 
-        /// <summary>
-        /// DateTime의 밀리초 이하 단위를 0으로 만듭니다.
-        /// </summary>
         private DateTime TruncateToSeconds(DateTime dt)
         {
             return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second);
