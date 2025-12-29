@@ -106,7 +106,6 @@ namespace ITM_Agent.Services
         /// </summary>
         public async Task<bool> ExecuteUiCollectionAsync()
         {
-            // (수동 실행 시 외부 호출 가능하도록 public 유지)
             var collectedLamps = new List<LampInfo>();
 
             try
@@ -203,7 +202,7 @@ namespace ITM_Agent.Services
                     await conn.OpenAsync();
 
                     // 장비 DB에서 최근 50건 로그 조회
-                    // (테이블명은 예시인 tblLampChangeLog 사용, 실제 환경에 맞춰 수정 필요)
+                    // (테이블명 tblLampChangeLog 사용)
                     string query = @"
                         SELECT TOP 50 LogTime, LampID 
                         FROM tblLampChangeLog 
@@ -268,7 +267,6 @@ namespace ITM_Agent.Services
                     if (isMappingMode)
                     {
                         // [매핑 모드] 시간(초 단위까지)이 일치하는 항목을 찾아 LampID(lamp_no) 업데이트
-                        // MSSQL의 LogTime과 PostgreSQL의 last_changed 비교
                         var match = mssqlLogs.FirstOrDefault(m => Math.Abs((m.LogTime - pgRow.LastChanged).TotalSeconds) < 2);
 
                         if (match.LampID > 0)
@@ -297,22 +295,31 @@ namespace ITM_Agent.Services
                             if (latestLog.LampID > 0 && latestLog.LogTime > pgRow.LastChanged)
                             {
                                 // 새로운 교체 이력 발견 -> 업데이트
-                                // Age는 (현재시간 - 교체시간)으로 자동 계산
                                 int newAge = (int)(DateTime.Now - latestLog.LogTime).TotalHours;
 
+                                // ▼▼▼ [수정] ts(수집시간)도 업데이트하고, 초 단위로 절삭(Truncate) ▼▼▼
                                 string updateSql = @"
                                     UPDATE public.eqp_lamp_life 
-                                    SET last_changed = @ts, age_hour = @age, serv_ts = NOW()::timestamp(0)
+                                    SET last_changed = @last_changed, 
+                                        age_hour = @age, 
+                                        ts = @ts,
+                                        serv_ts = NOW()::timestamp(0)
                                     WHERE eqpid = @eqpid AND lamp_no = @no";
 
                                 using (var updateCmd = new NpgsqlCommand(updateSql, pgConn))
                                 {
-                                    updateCmd.Parameters.AddWithValue("@ts", latestLog.LogTime);
+                                    // 소수점 절삭 (깔끔한 저장)
+                                    DateTime cleanLastChanged = TruncateToSeconds(latestLog.LogTime);
+                                    DateTime cleanAgentTime = TruncateToSeconds(DateTime.Now);
+
+                                    updateCmd.Parameters.AddWithValue("@last_changed", cleanLastChanged);
                                     updateCmd.Parameters.AddWithValue("@age", newAge);
+                                    updateCmd.Parameters.AddWithValue("@ts", cleanAgentTime); // 최신 수집 시간 반영
                                     updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
                                     updateCmd.Parameters.AddWithValue("@no", pgRow.LampNo.Value);
+                                    
                                     await updateCmd.ExecuteNonQueryAsync();
-                                    _logManager.LogEvent($"[LampLifeService] Updated '{pgRow.LampName}' (ID:{pgRow.LampNo}) : New Change Time {latestLog.LogTime}");
+                                    _logManager.LogEvent($"[LampLifeService] Updated '{pgRow.LampName}' (ID:{pgRow.LampNo}) : Changed {cleanLastChanged}");
                                 }
                             }
                         }
@@ -321,9 +328,6 @@ namespace ITM_Agent.Services
             }
         }
 
-        /// <summary>
-        /// 로컬 레지스트리를 검색하여 SQL Server 인스턴스 이름을 찾고 연결 문자열 생성
-        /// </summary>
         private string FindMssqlConnectionString()
         {
             string instanceName = null;
@@ -331,21 +335,18 @@ namespace ITM_Agent.Services
 
             try
             {
-                // 레지스트리에서 설치된 SQL 인스턴스 검색
                 using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL"))
                 {
                     if (key != null)
                     {
                         foreach (var name in key.GetValueNames())
                         {
-                            // "SQLSERVER"가 포함된 인스턴스 우선 검색 (대소문자 무시)
                             if (name.IndexOf("SQLSERVER", StringComparison.OrdinalIgnoreCase) >= 0)
                             {
                                 instanceName = name;
                                 break;
                             }
                         }
-                        // 없으면 첫 번째꺼라도 사용
                         if (instanceName == null && key.GetValueNames().Length > 0)
                         {
                             instanceName = key.GetValueNames()[0];
@@ -353,24 +354,14 @@ namespace ITM_Agent.Services
                     }
                 }
             }
-            catch { /* 권한 문제 등으로 실패 시 무시 */ }
+            catch { }
 
-            if (string.IsNullOrEmpty(instanceName))
-            {
-                // 발견 못했으면 기본값 시도
-                instanceName = "SQLEXPRESS";
-            }
+            if (string.IsNullOrEmpty(instanceName)) instanceName = "SQLEXPRESS";
 
             string dataSource = $"{hostName}\\{instanceName}";
-
-            // Windows 통합 인증 사용
             return $"Data Source={dataSource};Initial Catalog=N2000_MEASURE;Integrated Security=True;TrustServerCertificate=True;";
         }
 
-        /// <summary>
-        /// PostgreSQL 테이블 스키마 변경 (최초 1회 실행)
-        /// lamp_id -> lamp_name 변경 및 lamp_no 컬럼 추가
-        /// </summary>
         private void MigrateDatabaseSchema()
         {
             try
@@ -384,12 +375,9 @@ namespace ITM_Agent.Services
                         cmd.CommandText = @"
                             DO $$ 
                             BEGIN 
-                                -- 1. lamp_id 컬럼이 있으면 lamp_name으로 변경
                                 IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='lamp_id') THEN
                                     ALTER TABLE public.eqp_lamp_life RENAME COLUMN lamp_id TO lamp_name;
                                 END IF;
-
-                                -- 2. lamp_no 컬럼이 없으면 추가
                                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='lamp_no') THEN
                                     ALTER TABLE public.eqp_lamp_life ADD COLUMN lamp_no INTEGER NULL;
                                 END IF;
@@ -414,7 +402,6 @@ namespace ITM_Agent.Services
                 conn.Open();
                 using (var tx = conn.BeginTransaction())
                 {
-                    // lamp_name 기준 Upsert (lamp_no는 건드리지 않음)
                     const string sql = @"
                         INSERT INTO public.eqp_lamp_life 
                             (eqpid, lamp_name, ts, age_hour, lifespan_hour, last_changed, serv_ts)
@@ -436,11 +423,16 @@ namespace ITM_Agent.Services
                         cmd.Parameters.Add("@life", NpgsqlTypes.NpgsqlDbType.Integer);
                         cmd.Parameters.Add("@changed", NpgsqlTypes.NpgsqlDbType.Timestamp);
 
+                        // ▼▼▼ [수정] 현재 시간을 초 단위로 절삭하여 생성 ▼▼▼
+                        DateTime cleanNow = TruncateToSeconds(DateTime.Now);
+
                         foreach (var lamp in lamps)
                         {
                             cmd.Parameters["@eqpid"].Value = eqpid;
                             cmd.Parameters["@name"].Value = lamp.LampName;
-                            cmd.Parameters["@ts"].Value = DateTime.Now;
+                            
+                            // [수정] 절삭된 시간 사용
+                            cmd.Parameters["@ts"].Value = cleanNow;
 
                             if (int.TryParse(lamp.Age, out int age)) cmd.Parameters["@age"].Value = age;
                             else cmd.Parameters["@age"].Value = 0;
@@ -448,7 +440,11 @@ namespace ITM_Agent.Services
                             if (int.TryParse(lamp.LifeSpan, out int life)) cmd.Parameters["@life"].Value = life;
                             else cmd.Parameters["@life"].Value = 0;
 
-                            if (DateTime.TryParse(lamp.LastChanged, out DateTime changed)) cmd.Parameters["@changed"].Value = changed;
+                            if (DateTime.TryParse(lamp.LastChanged, out DateTime changed))
+                            {
+                                // [수정] LastChanged도 절삭 (선택 사항이지만 깔끔함을 위해)
+                                cmd.Parameters["@changed"].Value = TruncateToSeconds(changed);
+                            }
                             else cmd.Parameters["@changed"].Value = DBNull.Value;
 
                             cmd.ExecuteNonQuery();
@@ -457,6 +453,14 @@ namespace ITM_Agent.Services
                     tx.Commit();
                 }
             }
+        }
+
+        /// <summary>
+        /// DateTime의 밀리초 이하 단위를 0으로 만듭니다.
+        /// </summary>
+        private DateTime TruncateToSeconds(DateTime dt)
+        {
+            return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second);
         }
 
         // --- UI Helper Methods ---
