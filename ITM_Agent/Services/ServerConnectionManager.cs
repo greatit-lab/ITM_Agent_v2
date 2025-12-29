@@ -82,7 +82,7 @@ namespace ITM_Agent.Services
                 // [중요] 상태가 변했거나, '연결 끊김' 상태가 지속될 때도 UI 갱신을 위해 이벤트를 발생시킬 수 있음
                 // 여기서는 "상태 변화" 시점에만 발생시키되, DB/FTP 각각의 상태 변화도 감지
                 // (기존에는 전체 상태만 봤으나, 이제는 부분 상태 변화도 중요함)
-                
+
                 // 다만 너무 잦은 로그를 막기 위해, 내부적으로 상태가 완전히 동일하면 스킵하고
                 // DB나 FTP 중 하나라도 상태가 바뀌면 알림을 보냅니다.
                 // 편의상 _isServerConnected(전체)만 비교하던 것을 확장할 수도 있으나,
@@ -92,13 +92,13 @@ namespace ITM_Agent.Services
                 {
                     _isServerConnected = currentStatus;
                     string msg = currentStatus ? "Server connection restored." : "Server connection lost.";
-                    
+
                     _logManager.LogEvent($"[ServerConnectionManager] Status Changed: {msg} (DB:{dbOk}, FTP:{ftpOk})");
-                    
+
                     // 상세 상태 전달
                     ConnectionStatusChanged?.Invoke(currentStatus, dbOk, ftpOk, msg);
                 }
-                else if (!currentStatus) 
+                else if (!currentStatus)
                 {
                     // [추가] 이미 끊긴 상태라도, DB/FTP 상태가 서로 다를 수 있으므로 
                     // 확실한 UI 동기화를 위해 끊김 상태에서는 계속 이벤트를 전달해주는 것이 안전할 수 있음.
@@ -117,25 +117,25 @@ namespace ITM_Agent.Services
             try
             {
                 string cs = DatabaseInfo.CreateDefault().GetConnectionString();
-                
+
                 // [핵심 변경 1] Pooling=false 추가: 
                 // 끊긴 연결을 재사용하는 것을 방지하고 매번 실제 핸드셰이크를 수행합니다.
                 if (!cs.Contains("Pooling=")) cs += ";Pooling=false";
-                
+
                 // 타임아웃 설정
                 if (!cs.Contains("Timeout=")) cs += $";Timeout={DB_TIMEOUT}";
 
                 using (var conn = new NpgsqlConnection(cs))
                 {
                     await conn.OpenAsync();
-                    
+
                     // [핵심 변경 2] 실제 쿼리 실행:
                     // 연결 객체가 생성되어도 실제 통신이 되는지 확인하기 위해 가벼운 쿼리 수행
                     using (var cmd = new NpgsqlCommand("SELECT 1", conn))
                     {
                         await cmd.ExecuteScalarAsync();
                     }
-                    
+
                     return true;
                 }
             }
