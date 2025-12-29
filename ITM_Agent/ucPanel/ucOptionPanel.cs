@@ -8,13 +8,16 @@ using System.Threading.Tasks;
 using Npgsql;
 using ConnectInfo;
 using System.Net.Sockets;
+using System.Net.Http; // [추가] HttpClient 사용
 using System.Drawing.Drawing2D;
+using System.Threading;
 
 namespace ITM_Agent.ucPanel
 {
     /// <summary>
     /// MenuStrip1 → tsm_Option 클릭 시 표시되는 옵션(UserControl)  
     /// Server Connection 상태는 이제 ServerConnectionManager에 의해 외부에서 제어됩니다.
+    /// (수동 새로고침 시 HTTP Health Check 수행)
     /// </summary>
     public partial class ucOptionPanel : UserControl
     {
@@ -31,6 +34,10 @@ namespace ITM_Agent.ucPanel
         // 동시 새로고침 방지 플래그
         private bool _isRefreshing = false;
         private readonly object _refreshLock = new object();
+
+        // [추가] HTTP 클라이언트 (수동 체크용)
+        private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        private const int API_PORT = 8082;
 
         public ucOptionPanel(SettingsManager settings)
         {
@@ -69,7 +76,7 @@ namespace ITM_Agent.ucPanel
             this.pbDbStatus.Paint += PbStatus_Paint;
             this.pbObjStatus.Paint += PbStatus_Paint;
 
-            // 타이머 정지 (자동 갱신 비활성화)
+            // 타이머 정지 (자동 갱신 비활성화 - MainForm에서 제어)
             this.statusRefreshTimer.Stop();
         }
 
@@ -199,7 +206,6 @@ namespace ITM_Agent.ucPanel
             }
         }
 
-        // 수동 새로고침 버튼은 여전히 동작 (사용자가 원할 때 확인용)
         private void BtnRefreshStatus_Click(object sender, EventArgs e)
         {
             _ = RefreshStatusAsync(true);
@@ -207,11 +213,7 @@ namespace ITM_Agent.ucPanel
 
         public void ActivatePanel()
         {
-            // [수정] 패널이 활성화되어도 내부 타이머를 시작하지 않음.
-            // MainForm의 ServerConnectionManager가 이벤트를 통해 상태를 밀어넣어줌.
-            // 다만, 초기 진입 시 화면이 비어있을 수 있으므로 한 번의 수동 체크는 허용하거나,
-            // ServerConnectionManager가 현재 상태를 즉시 알려주는 구조가 좋음.
-            // 여기서는 단순 수동 체크 1회만 수행.
+            // 화면 진입 시 1회 갱신 (타이머는 사용 안 함)
             _ = RefreshStatusAsync(true);
         }
 
@@ -222,24 +224,23 @@ namespace ITM_Agent.ucPanel
 
         private void statusRefreshTimer_Tick(object sender, EventArgs e)
         {
-            // 내부 타이머 로직 무시 (사용 안 함)
+            // 사용 안 함
         }
 
-        // ▼▼▼ [핵심] 외부(MainForm)에서 상태를 주입받아 UI를 즉시 갱신 ▼▼▼
-        public void SetDirectConnectionStatus(bool dbOk, bool ftpOk)
+        // ▼▼▼ 외부(MainForm)에서 상태 주입 ▼▼▼
+        public void SetDirectConnectionStatus(bool dbOk, bool apiOk)
         {
             if (this.InvokeRequired)
             {
-                this.Invoke(new Action(() => SetDirectConnectionStatus(dbOk, ftpOk)));
+                this.Invoke(new Action(() => SetDirectConnectionStatus(dbOk, apiOk)));
                 return;
             }
 
-            // UI 즉시 반영
             pbDbStatus.BackColor = dbOk ? Color.LimeGreen : Color.Red;
-            pbObjStatus.BackColor = ftpOk ? Color.LimeGreen : Color.Red;
+            pbObjStatus.BackColor = apiOk ? Color.LimeGreen : Color.Red;
 
             lblDbHost.Text = dbOk ? "Connected" : "Disconnected";
-            lblObjHost.Text = ftpOk ? "Connected" : "Disconnected";
+            lblObjHost.Text = apiOk ? "Connected" : "Disconnected";
         }
         // ▲▲▲ 추가 끝 ▲▲▲
 
@@ -253,7 +254,6 @@ namespace ITM_Agent.ucPanel
 
             this.Invoke(new Action(() =>
             {
-                // 체크 중 표시
                 if (lblDbHost.Text != "Connected" && lblDbHost.Text != "Disconnected")
                 {
                     pbDbStatus.BackColor = Color.Gray;
@@ -288,8 +288,7 @@ namespace ITM_Agent.ucPanel
             {
                 string cs = DatabaseInfo.CreateDefault().GetConnectionString();
                 host = ExtractHostFromConnectionString(cs);
-
-                // [수정] 수동 체크 시에도 Pooling 끄기
+                
                 if (!cs.Contains("Pooling=")) cs += ";Pooling=false";
                 cs += ";Timeout=3";
 
@@ -319,27 +318,29 @@ namespace ITM_Agent.ucPanel
             }
         }
 
+        // [수정] FTP 연결 대신 Web API Health Check 수행
         private async Task CheckObjectStoryAsync()
         {
             string host = "N/A";
-            int port = 21;
             try
             {
                 var ftpInfo = FtpsInfo.CreateDefault();
                 host = ftpInfo.Host;
-                port = ftpInfo.Port;
 
-                if (string.IsNullOrEmpty(host)) throw new Exception("FTP Host not configured.");
+                if (string.IsNullOrEmpty(host)) throw new Exception("API Host not configured.");
 
                 this.Invoke(new Action(() => lblObjHost.Text = MaskIpAddress(host)));
 
-                bool connected = await Task.Run(() =>
+                // HTTP Health Check (Port 8080)
+                string url = $"http://{host}:{API_PORT}/api/FileUpload/health";
+                bool connected = await Task.Run(async () =>
                 {
                     try
                     {
-                        using (var tcp = new TcpClient())
+                        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                         {
-                            return tcp.ConnectAsync(host, port).Wait(2000);
+                            var response = await _httpClient.GetAsync(url, cts.Token);
+                            return response.IsSuccessStatusCode;
                         }
                     }
                     catch { return false; }
@@ -351,7 +352,7 @@ namespace ITM_Agent.ucPanel
                 }
                 else
                 {
-                    throw new Exception($"Failed to connect to {host}:{port}");
+                    throw new Exception($"Failed to connect to API ({url})");
                 }
             }
             catch (Exception)
