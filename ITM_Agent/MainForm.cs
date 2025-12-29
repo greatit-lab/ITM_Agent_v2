@@ -8,7 +8,7 @@ using System.IO;
 using System.Windows.Forms;
 using System.Reflection;
 using System.Diagnostics;
-using System.Threading.Tasks; // (Task.Delay 사용)
+using System.Threading.Tasks;
 
 namespace ITM_Agent
 {
@@ -25,6 +25,9 @@ namespace ITM_Agent
         // ConfigUpdateService 필드
         private ConfigUpdateService configUpdateService;
 
+        // 서버 연결 상태 관리자
+        private ServerConnectionManager serverConnectionManager;
+
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
         private ToolStripMenuItem titleItem;
@@ -38,15 +41,12 @@ namespace ITM_Agent
             {
                 try
                 {
-                    // 현재 실행 중인 어셈블리의 파일 버전 정보를 가져옵니다.
                     var assembly = Assembly.GetExecutingAssembly();
                     var fvi = FileVersionInfo.GetVersionInfo(assembly.Location);
-                    // "v" 접두사를 붙여 반환합니다 (예: "v1.2.3.4")
                     return $"v{fvi.FileVersion}";
                 }
                 catch
                 {
-                    // 버전 정보를 가져오는 데 실패하면 기본값 반환
                     return "vUnknown";
                 }
             }
@@ -62,7 +62,6 @@ namespace ITM_Agent
         private bool isDebugMode = false;   // 디버그 모드 상태
         private ucOptionPanel ucOptionPanel;  // ← 옵션 패널
 
-        // MainForm.cs 상단 (다른 user control 변수들과 함께)
         private ucUploadPanel ucUploadPanel;
         private ucPluginPanel ucPluginPanel;
         private ucLampLifePanel ucLampLifePanel;
@@ -70,7 +69,6 @@ namespace ITM_Agent
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            // DB 접속 준비가 완료된 후(생성자 이후) WarmUp 실행
             PerformanceWarmUp.Run();
         }
 
@@ -81,7 +79,6 @@ namespace ITM_Agent
 
             InitializeComponent();
 
-            // 폼 핸들이 생성된 직후 상태 표시(Stopped, 빨간색)
             this.HandleCreated += (sender, e) => UpdateMainStatus("Stopped", Color.Red);
 
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -94,32 +91,27 @@ namespace ITM_Agent
 
             ucImageTransPanel.ImageSaveFolderChanged += ucUploadPanel.LoadImageSaveFolder_PathChanged;
 
-            // 설정 패널
             ucSc1 = new ucPanel.ucConfigurationPanel(settingsManager);
-            // Override Names 패널 (Designer에서 배치된 ucConfigPanel 컨트롤 인스턴스 전달)
             ucOverrideNamesPanel = new ucOverrideNamesPanel(settingsManager, this.ucConfigPanel, this.logManager, this.settingsManager.IsDebugMode);
 
-            // FileWatcherManager 생성 (SettingsManager, LogManager, 디버그 모드 플래그)
             fileWatcherManager = new FileWatcherManager(settingsManager, logManager, isDebugMode);
 
-            // EQPID 초기화 (이 시점에서 Connection.ini는 준비 완료됨)
             eqpidManager = new EqpidManager(settingsManager, logManager, VersionInfo);
-            eqpidManager.InitializeEqpid(); // (내부적으로 (구)DB의 agent_info 업데이트)
+            eqpidManager.InitializeEqpid();
 
             string eqpid = settingsManager.GetEqpid();
             if (!string.IsNullOrEmpty(eqpid))
             {
                 ProceedWithMainFunctionality(eqpid);
-
-                // Eqpid 로드 후 ConfigUpdateService 시작
-                // (MainForm, 즉 'this'를 전달하여 Stop/Run 사이클 트리거 가능)
                 configUpdateService = new ConfigUpdateService(settingsManager, logManager, this, eqpid);
             }
 
-            // 기존에 없던 InfoRetentionCleaner 즉시 실행
             infoCleaner = new InfoRetentionCleaner(settingsManager);
 
-            // 아이콘 설정
+            // ServerConnectionManager 초기화 및 이벤트 구독
+            serverConnectionManager = new ServerConnectionManager(logManager);
+            serverConnectionManager.ConnectionStatusChanged += OnServerConnectionStatusChanged;
+
             SetFormIcon();
 
             this.Text = $"ITM Agent - {VersionInfo}";
@@ -134,12 +126,56 @@ namespace ITM_Agent
             btn_Stop.Click += btn_Stop_Click;
 
             UpdateUIBasedOnSettings();
-            // infoCleaner = new InfoRetentionCleaner(settingsManager); // (중복 제거)
+        }
+
+        // [수정] 서버 연결 상태 변경 핸들러
+        private void OnServerConnectionStatusChanged(bool isConnected, bool isDbOk, bool isFtpOk, string message)
+        {
+            // UI 스레드에서 실행 보장
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => OnServerConnectionStatusChanged(isConnected, isDbOk, isFtpOk, message)));
+                return;
+            }
+
+            logManager.LogEvent($"[MainForm] Server Status Handling: {message}");
+
+            // ucOptionPanel의 상태 표시등 즉시 동기화
+            ucOptionPanel?.SetDirectConnectionStatus(isDbOk, isFtpOk);
+
+            if (isConnected)
+            {
+                // [복구] -> Auto-Scan 등 재개
+                UpdateMainStatus("Running (Recovered)", Color.Blue);
+
+                // 1. 파일 감시 재개
+                fileWatcherManager?.ResumeWatching();
+                ucUploadPanel?.ResumeWatching(); // [추가] Upload 패널 감시 재개
+
+                // 2. 램프/성능 수집 재개
+                lampLifeService?.Start();
+                PerformanceDbWriter.Start(lb_eqpid.Text, eqpidManager);
+
+                // 3. 누락분 처리 (Slow Recovery) - 별도 Task로 실행
+                Task.Run(() => fileWatcherManager?.StartRecoveryScan());
+            }
+            else
+            {
+                // [장애] -> 모든 기능 Holding
+                UpdateMainStatus("Holding (Server Lost)", Color.Red);
+
+                // 1. 파일 감시 일시 정지
+                fileWatcherManager?.PauseWatching();
+                ucUploadPanel?.PauseWatching(); // [추가] Upload 패널 감시 일시 정지
+
+                // 2. 램프/성능 수집 중지
+                lampLifeService?.Stop();
+                PerformanceDbWriter.Stop();
+            }
         }
 
         private void SetFormIcon()
         {
-            // 제목줄 아이콘 설정
             this.Icon = new Icon(@"Resources\Icons\icon.ico");
         }
 
@@ -158,7 +194,6 @@ namespace ITM_Agent
 
             trayMenu.Items.Add(new ToolStripSeparator());
 
-            /* Tray 전용 핸들러 연결 */
             runItem = new ToolStripMenuItem("Run", null, Tray_Run_Click);
             stopItem = new ToolStripMenuItem("Stop", null, Tray_Stop_Click);
             quitItem = new ToolStripMenuItem("Quit", null, Tray_Quit_Click);
@@ -167,7 +202,7 @@ namespace ITM_Agent
 
             trayIcon = new NotifyIcon
             {
-                Icon = new Icon(@"Resources\Icons\icon.ico"), // TrayIcon에 사용할 아이콘
+                Icon = new Icon(@"Resources\Icons\icon.ico"),
                 ContextMenuStrip = trayMenu,
                 Visible = true,
                 Text = this.Text
@@ -177,8 +212,8 @@ namespace ITM_Agent
 
         private void Tray_Run_Click(object sender, EventArgs e)
         {
-            if (btn_Run.Enabled)         // 안전 가드
-                btn_Run_Click(sender, e);   // 내부 로직 직접 호출
+            if (btn_Run.Enabled)
+                btn_Run_Click(sender, e);
         }
 
         private void Tray_Stop_Click(object sender, EventArgs e)
@@ -198,7 +233,7 @@ namespace ITM_Agent
             this.Show();
             this.WindowState = FormWindowState.Normal;
             this.Activate();
-            titleItem.Enabled = false;  // 트레이 메뉴 비활성화
+            titleItem.Enabled = false;
         }
 
         private void UpdateTrayMenuStatus()
@@ -208,7 +243,6 @@ namespace ITM_Agent
             if (quitItem != null) quitItem.Enabled = btn_Quit.Enabled;
         }
 
-        // 자동화를 위해 폼을 잠시 복원하는 public 메서드
         public void ShowTemporarilyForAutomation()
         {
             if (InvokeRequired)
@@ -217,22 +251,18 @@ namespace ITM_Agent
                 return;
             }
 
-            // 폼이 다른 창에 가려지지 않도록 최상위로 설정
             this.TopMost = true;
 
-            // 폼이 숨겨져 있을 때만 보이도록 처리
             if (!this.Visible)
             {
                 this.Show();
                 this.WindowState = FormWindowState.Normal;
             }
 
-            // 항상 최상위로 가져와 포커스를 확보
             this.Activate();
             this.BringToFront();
         }
 
-        // 자동화 완료 후 폼을 다시 트레이로 숨기는 public 메서드
         public void HideToTrayAfterAutomation()
         {
             if (InvokeRequired)
@@ -241,8 +271,6 @@ namespace ITM_Agent
                 return;
             }
             this.Hide();
-
-            // TopMost 속성을 원래대로 복원
             this.TopMost = false;
         }
 
@@ -287,23 +315,22 @@ namespace ITM_Agent
             ts_Status.Text = status;
             ts_Status.ForeColor = color;
 
-            bool isRunning = status.StartsWith("Running");
+            // [중요] Holding 상태도 'Running'의 일종(실행 중 대기)으로 취급하여 UI를 잠급니다.
+            bool isActiveRunning = status.StartsWith("Running") || status.StartsWith("Holding");
 
-            // --- 모든 UserControl에 상태 전달 ---------------------
             ucOverrideNamesPanel?.UpdateStatus(status);
-            ucConfigPanel?.UpdateStatusOnRun(isRunning);
-            ucOverrideNamesPanel?.UpdateStatusOnRun(isRunning);
-            ucImageTransPanel?.UpdateStatusOnRun(isRunning);
-            ucUploadPanel?.UpdateStatusOnRun(isRunning);
-            ucPluginPanel?.UpdateStatusOnRun(isRunning);
-            ucOptionPanel?.UpdateStatusOnRun(isRunning);
-            ucLampLifePanel?.UpdateStatusOnRun(isRunning);
+            ucConfigPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucOverrideNamesPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucImageTransPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucUploadPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucPluginPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucOptionPanel?.UpdateStatusOnRun(isActiveRunning);
+            ucLampLifePanel?.UpdateStatusOnRun(isActiveRunning);
 
             logManager.LogEvent($"Status updated to: {status}");
             if (isDebugMode)
-                logManager.LogDebug($"Status updated to: {status}. Running state: {isRunning}");
+                logManager.LogDebug($"Status updated to: {status}. Running state: {isActiveRunning}");
 
-            /* ---------- 버튼 / 트레이 메뉴 활성화 ---------------- */
             if (status == "Stopped!")
             {
                 btn_Run.Enabled = false;
@@ -316,10 +343,10 @@ namespace ITM_Agent
                 btn_Stop.Enabled = false;
                 btn_Quit.Enabled = true;
             }
-            else if (isRunning)
+            else if (isActiveRunning) // Running, Recovered, or Holding
             {
                 btn_Run.Enabled = false;
-                btn_Stop.Enabled = true;
+                btn_Stop.Enabled = true; // 멈출 수는 있어야 함
                 btn_Quit.Enabled = false;
             }
             else
@@ -330,7 +357,7 @@ namespace ITM_Agent
             }
 
             UpdateTrayMenuStatus();
-            UpdateMenuItemsState(isRunning);
+            UpdateMenuItemsState(isActiveRunning); // 메뉴도 비활성화
             UpdateButtonsState();
         }
 
@@ -346,7 +373,7 @@ namespace ITM_Agent
                         {
                             if (subItem.Text == "New" || subItem.Text == "Open" || subItem.Text == "Quit")
                             {
-                                subItem.Enabled = !isRunning; // Running 상태에서 비활성화
+                                subItem.Enabled = !isRunning;
                             }
                         }
                     }
@@ -354,19 +381,14 @@ namespace ITM_Agent
             }
         }
 
-        // ▼▼▼ [수정] btn_Run_Click 로직 분리 ▼▼▼
         private void btn_Run_Click(object sender, EventArgs e)
         {
             logManager.LogEvent("Run button clicked.");
             PerformRunLogic();
         }
 
-        /// <summary>
-        /// Run 버튼 클릭 또는 자동 재시작 시 호출되는 핵심 Run 로직
-        /// </summary>
         private void PerformRunLogic()
         {
-            // [핵심 추가] Upload 패널 유효성 검사
             if (ucUploadPanel != null)
             {
                 string validationError;
@@ -375,39 +397,34 @@ namespace ITM_Agent
                     MessageBox.Show($"실행할 수 없습니다. Upload 패널 설정을 확인하세요.\n\n{validationError}",
                                     "실행 오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     logManager.LogEvent($"Run blocked: {validationError}");
-                    return; // 실행 중단
+                    return;
                 }
             }
 
-            // Run 로직이 시작될 때 (특히 재시작 후)
-            // 항상 agent_info를 갱신하도록 호출합니다.
             try
             {
                 if (eqpidManager != null)
                 {
-                    // InitializeEqpid()는 내부적으로 RegisterOrUpdateAgentInfo()를 호출합니다.
-                    // 이 시점에는 DatabaseInfo 캐시가 만료되어 새 DB(10.0.0.2)로 접속합니다.
                     eqpidManager.InitializeEqpid();
                 }
             }
             catch (Exception ex)
             {
                 logManager.LogError($"Error updating agent_info during Run logic: {ex.Message}");
-                // (이 작업이 실패해도 Agent의 핵심 기능(감시)은 계속되어야 하므로 return하지 않습니다.)
             }
 
             try
             {
-                /*──────── File Watcher (Type A) 시작 ────────*/
                 fileWatcherManager.StartWatching();
-
-                /*──────── ucUploadPanel (Type A & B) 시작 ────────*/
                 ucUploadPanel?.UpdateStatusOnRun(true);
 
                 PerformanceDbWriter.Start(lb_eqpid.Text, this.eqpidManager);
                 lampLifeService.Start();
 
-                isRunning = true; // 상태 업데이트
+                // 서버 모니터링 시작
+                serverConnectionManager.Start();
+
+                isRunning = true;
                 UpdateMainStatus("Running...", Color.Blue);
 
                 if (isDebugMode)
@@ -415,21 +432,16 @@ namespace ITM_Agent
                     logManager.LogDebug("FileWatcherManager and ucUploadPanel Watchers started successfully.");
                 }
 
-                // ▼▼▼ [추가] 1회성 AutoRun 플래그 초기화 및 완료 보고 ▼▼▼
                 if (settingsManager.AutoRunOnStart)
                 {
                     logManager.LogEvent("[MainForm] AutoRun successful. Resetting flag and confirming update.");
-                    // (즉시 0으로 리셋)
                     settingsManager.AutoRunOnStart = false;
 
-                    // (비동기) 신규 DB에 완료 보고
                     if (configUpdateService != null)
                     {
-                        // (async void 메서드 호출이지만, Task 반환)
                         _ = configUpdateService.ConfirmUpdateSuccessAsync();
                     }
                 }
-                // ▲▲▲ [추가] 완료 ▲▲▲
             }
             catch (Exception ex)
             {
@@ -437,13 +449,9 @@ namespace ITM_Agent
                 UpdateMainStatus("Stopped!", Color.Red);
             }
         }
-        // ▲▲▲ [수정] 완료 ▲▲▲
 
-
-        // ▼▼▼ [수정] btn_Stop_Click 로직 분리 ▼▼▼
         private void btn_Stop_Click(object sender, EventArgs e)
         {
-            // 경고창 표시 (사용자 클릭 시에만)
             DialogResult result = MessageBox.Show(
                 "프로그램을 중지하시겠습니까?\n모든 파일 감시 및 업로드 기능이 중단됩니다.",
                 "작업 중지 확인",
@@ -461,17 +469,14 @@ namespace ITM_Agent
             }
         }
 
-        /// <summary>
-        /// Stop 버튼 클릭 또는 자동 재시작 시 호출되는 핵심 Stop 로직
-        /// </summary>
         private void PerformStopLogic()
         {
             try
             {
-                /*─ FileWatcher (Type A) + Performance 로깅 중지 ─*/
-                fileWatcherManager.StopWatchers();
+                // 서버 모니터링 중지
+                serverConnectionManager.Stop();
 
-                /*─ ucUploadPanel (Type A & B) 중지 ─*/
+                fileWatcherManager.StopWatchers();
                 ucUploadPanel?.UpdateStatusOnRun(false);
 
                 PerformanceDbWriter.Stop();
@@ -479,13 +484,10 @@ namespace ITM_Agent
 
                 isRunning = false;
 
-                /*─ 상태 표시 반영 ─*/
                 bool isReady = ucConfigPanel?.IsReadyToRun() ?? false;
                 UpdateMainStatus(isReady ? "Ready to Run" : "Stopped!",
                                  isReady ? Color.Green : Color.Red);
 
-                /*─ 패널 동기화 ─*/
-                // (UpdateMainStatus 내부에서 이미 호출됨)
                 if (isDebugMode)
                     logManager.LogDebug("FileWatcherManager & ucUploadPanel Watchers stopped successfully.");
             }
@@ -498,7 +500,7 @@ namespace ITM_Agent
 
         private void UpdateButtonsState()
         {
-            UpdateTrayMenuStatus(); // Tray 아이콘 상태 업데이트
+            UpdateTrayMenuStatus();
         }
 
         private void btn_Quit_Click(object sender, EventArgs e)
@@ -527,9 +529,12 @@ namespace ITM_Agent
                 lampLifeService?.Stop();
                 lampLifeService = null;
 
-                // ConfigUpdateService 타이머 중지
                 configUpdateService?.Dispose();
                 configUpdateService = null;
+
+                // 모니터링 매니저 정리
+                serverConnectionManager?.Dispose();
+                serverConnectionManager = null;
 
                 infoCleaner?.Dispose();
                 infoCleaner = null;
@@ -570,29 +575,22 @@ namespace ITM_Agent
 
         private void MainForm_Load(object sender, EventArgs e)
         {
-            // (1) 폼 로드시 실행할 로직
             pMain.Controls.Add(ucSc1);
-            UpdateMenusBasedOnType();   // 메뉴 상태 업데이트
+            UpdateMenusBasedOnType();
 
-            // (2) 초기 패널 설정 및 UserControl 상태 동기화
-            ShowUserControl(ucConfigPanel); // 가장 먼저 ucConfigPanel 보여줌
+            ShowUserControl(ucConfigPanel);
 
-            // (3) ucConfigurationPanel 에서 현재 Target/Folder/Regex 등이 모두 세팅되었는지 확인
             bool isReady = ucConfigPanel.IsReadyToRun();
 
-            // AutoRunOnStart 플래그 확인 로직 추가
             if (settingsManager.AutoRunOnStart && isReady)
             {
-                // (4.1) 자동 실행 플래그가 켜져 있으면 즉시 Run 호출
                 logManager.LogEvent("[MainForm] AutoRunOnStart=1 detected on load. Starting Run logic...");
-                // (지연을 주어 폼 로드가 완료되도록 함)
                 this.BeginInvoke(new Action(() => {
                     PerformRunLogic();
                 }));
             }
             else
             {
-                // (4.2) 자동 실행이 아니면 기존 상태 로직 따름
                 if (isReady)
                 {
                     UpdateMainStatus("Ready to Run", Color.Green);
@@ -727,23 +725,19 @@ namespace ITM_Agent
             pMain.Controls.Add(control);
             control.Dock = DockStyle.Fill;
 
-            // Option 패널 활성화/비활성화 명시적 호출
-            // 1. 모든 패널의 상태를 동기화합니다.
+            // [수정] 각 패널의 상태 초기화 (메뉴 이동 시 잠금 풀림 방지)
             if (control is ucConfigurationPanel cfg) cfg.InitializePanel(isRunning);
             else if (control is ucOverrideNamesPanel ov) ov.InitializePanel(isRunning);
             else if (control is ucPluginPanel plg) plg.InitializePanel(isRunning);
             else if (control is ucOptionPanel opt) opt.InitializePanel(isRunning);
-            // (다른 패널들도 필요시 InitializePanel 호출 추가)
+            else if (control is ucUploadPanel upload) upload.InitializePanel(isRunning); // [추가] Upload 패널 초기화
 
-            // 2. Option 패널에 대한 특별 처리
             if (control == ucOptionPanel)
             {
-                // Option 패널이 표시될 때: 타이머 시작 및 즉시 새로고침
                 ucOptionPanel.ActivatePanel();
             }
             else
             {
-                // 다른 패널이 표시될 때: Option 패널의 타이머 중지
                 ucOptionPanel?.DeactivatePanel();
             }
         }
@@ -780,7 +774,6 @@ namespace ITM_Agent
         public MainForm()
             : this(new SettingsManager(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini")))
         {
-            // 추가 동작 없음
         }
 
         private void tsm_AboutInfo_Click(object sender, EventArgs e)
@@ -791,7 +784,6 @@ namespace ITM_Agent
             }
         }
 
-        // ConfigUpdateService가 호출할 공개 메서드
         public void TriggerRestartCycle()
         {
             if (InvokeRequired)
