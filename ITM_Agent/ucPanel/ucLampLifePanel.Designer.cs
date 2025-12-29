@@ -49,7 +49,7 @@ namespace ITM_Agent.ucPanel
             this.lblInfo.ForeColor = System.Drawing.Color.Gray;
             this.lblInfo.Location = new System.Drawing.Point(40, 55);
             this.lblInfo.Name = "lblInfo";
-            this.lblInfo.Size = new System.Drawing.Size(433, 12);
+            this.lblInfo.Size = new System.Drawing.Size(402, 12);
             this.lblInfo.TabIndex = 8;
             this.lblInfo.Text = "※ Runs UI Automation once at start, then syncs with DB every 1 hour.";
             // 
@@ -85,7 +85,7 @@ namespace ITM_Agent.ucPanel
             // chkEnable
             // 
             this.chkEnable.AutoSize = true;
-            this.chkEnable.Location = new System.Drawing.Point(250, 32);
+            this.chkEnable.Location = new System.Drawing.Point(556, 32);
             this.chkEnable.Name = "chkEnable";
             this.chkEnable.Size = new System.Drawing.Size(15, 14);
             this.chkEnable.TabIndex = 1;
@@ -97,7 +97,7 @@ namespace ITM_Agent.ucPanel
             this.label1.AutoSize = true;
             this.label1.Location = new System.Drawing.Point(20, 33);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(215, 12);
+            this.label1.Size = new System.Drawing.Size(203, 12);
             this.label1.TabIndex = 0;
             this.label1.Text = "• Enable Lamp Life Data Collection";
             // 
