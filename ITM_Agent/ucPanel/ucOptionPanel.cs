@@ -288,7 +288,7 @@ namespace ITM_Agent.ucPanel
             {
                 string cs = DatabaseInfo.CreateDefault().GetConnectionString();
                 host = ExtractHostFromConnectionString(cs);
-                
+
                 if (!cs.Contains("Pooling=")) cs += ";Pooling=false";
                 cs += ";Timeout=3";
 
