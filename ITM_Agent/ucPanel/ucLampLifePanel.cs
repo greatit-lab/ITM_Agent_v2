@@ -53,24 +53,18 @@ namespace ITM_Agent.ucPanel
         private void LoadSettings()
         {
             chkEnable.Checked = _settingsManager.IsLampLifeCollectorEnabled;
-            numInterval.Value = _settingsManager.LampLifeCollectorInterval;
+            // Interval 설정 로드 로직 제거 (1시간 고정)
             UpdateControlsEnabled();
         }
 
         private void chkEnable_CheckedChanged(object sender, EventArgs e)
         {
-            // 실행 중이 아닐 때만 설정 변경 가능
             if (_isAgentRunning) return;
             _settingsManager.IsLampLifeCollectorEnabled = chkEnable.Checked;
             UpdateControlsEnabled();
         }
 
-        private void numInterval_ValueChanged(object sender, EventArgs e)
-        {
-            // 실행 중이 아닐 때만 설정 변경 가능
-            if (_isAgentRunning) return;
-            _settingsManager.LampLifeCollectorInterval = (int)numInterval.Value;
-        }
+        // Interval 변경 이벤트 핸들러 제거
 
         private async void btnManualCollect_Click(object sender, EventArgs e)
         {
@@ -80,12 +74,8 @@ namespace ITM_Agent.ucPanel
 
             try
             {
-                // ▼▼▼ [수정] 변경된 메서드 이름(ExecuteUiCollectionAsync) 사용 ▼▼▼
+                // UI 자동화 로직 1회 호출 (수동 테스트용)
                 bool success = await _lampLifeService.ExecuteUiCollectionAsync();
-                
-                // (참고: LampLifeService 내부에서 CollectionCompleted 이벤트를 발생시키므로
-                //  UpdateLastCollectLabel이 자동으로 호출되지만, 
-                //  확실한 UI 반응을 위해 여기서도 상태 업데이트를 수행합니다.)
                 UpdateLastCollectLabel(success, DateTime.Now);
             }
             catch (Exception)
@@ -94,7 +84,6 @@ namespace ITM_Agent.ucPanel
             }
             finally
             {
-                // Agent가 실행 중이 아닐 때만 버튼을 다시 활성화
                 if (!_isAgentRunning)
                 {
                     btnManualCollect.Enabled = true;
@@ -110,14 +99,12 @@ namespace ITM_Agent.ucPanel
 
         private void UpdateControlsEnabled()
         {
-            // Agent가 실행 중이 아닐 때만 설정 컨트롤들을 활성화합니다.
             bool canEditSettings = !_isAgentRunning;
 
             chkEnable.Enabled = canEditSettings;
-            numInterval.Enabled = canEditSettings && chkEnable.Checked;
+            // Interval 컨트롤 활성화 로직 제거
 
-            // 수동 수집 버튼은 Agent 실행 여부와 관계 없이, 기능이 활성화되어 있으면 항상 활성화합니다.
-            // 단, 클릭 시에는 비활성화되고 작업 완료 후 다시 상태에 맞게 활성화됩니다.
+            // 수동 버튼은 체크박스가 켜져 있을 때만 활성화
             btnManualCollect.Enabled = chkEnable.Checked;
         }
     }
