@@ -1,40 +1,43 @@
-// ITM_Agnet/Services/LampLifeService.cs
+// ITM_Agent/Services/LampLifeService.cs
 using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Globalization;
+using System.Data.SqlClient; // MSSQL 접속용
+using System.Diagnostics;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using ConnectInfo;
-using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
+using Microsoft.Win32; // 레지스트리 접근용
 using Npgsql;
-using System.Windows.Forms; // MainForm 참조를 위해 추가
 
 namespace ITM_Agent.Services
 {
     public struct LampInfo
     {
-        public string LampId { get; set; }
-        public string Age { get; set; }
-        public string LifeSpan { get; set; }
-        public string LastChanged { get; set; }
+        public string LampName; // (구 LampId) 화면상 이름 (예: Lamp 1)
+        public int LampNo;      // (신규) 장비 DB의 고유 ID (예: 4)
+        public string Age;
+        public string LifeSpan;
+        public string LastChanged;
     }
 
     public class LampLifeService
     {
         private readonly SettingsManager _settingsManager;
         private readonly LogManager _logManager;
-        private System.Threading.Timer _collectTimer;
+        private readonly MainForm _mainForm;
+        private System.Threading.Timer _schedular;
         private bool _isRunning = false;
         private readonly object _lock = new object();
         private readonly string PROCESS_NAME;
-        private readonly MainForm _mainForm;
+
+        // 주기: 1시간
+        private const int UPDATE_INTERVAL_MS = 60 * 60 * 1000;
 
         public event Action<bool, DateTime> CollectionCompleted;
 
@@ -50,24 +53,39 @@ namespace ITM_Agent.Services
         {
             lock (_lock)
             {
-                if (_isRunning || !_settingsManager.IsLampLifeCollectorEnabled)
-                {
-                    return;
-                }
+                if (_isRunning || !_settingsManager.IsLampLifeCollectorEnabled) return;
 
-                _logManager.LogEvent("[LampLifeService] Starting...");
-                int intervalMinutes = _settingsManager.LampLifeCollectorInterval;
-                if (intervalMinutes <= 0)
-                {
-                    _logManager.LogEvent("[LampLifeService] Interval is zero or less. Service will run once and stop.");
-                    _collectTimer = new System.Threading.Timer(OnTimerElapsed, null, 0, Timeout.Infinite);
-                }
-                else
-                {
-                    _collectTimer = new System.Threading.Timer(OnTimerElapsed, null, 0, intervalMinutes * 60 * 1000);
-                }
                 _isRunning = true;
-                _logManager.LogEvent($"[LampLifeService] Started with {intervalMinutes} min interval.");
+                _logManager.LogEvent("[LampLifeService] Service Started.");
+
+                // 1. DB 스키마 마이그레이션 (lamp_id -> lamp_name, lamp_no 추가)
+                MigrateDatabaseSchema();
+
+                // 2. 비동기로 초기화 작업 및 주기적 작업 시작
+                Task.Run(async () =>
+                {
+                    // [Step 1] UI Automation 1회 실행 (초기 데이터 적재)
+                    _logManager.LogEvent("[LampLifeService] Executing Initial UI Automation...");
+                    bool uiSuccess = await ExecuteUiCollectionAsync();
+
+                    // [Step 2] MSSQL 접속 및 매핑 (Time Matching)
+                    if (uiSuccess)
+                    {
+                        _logManager.LogEvent("[LampLifeService] UI Collection done. Starting MSSQL Mapping...");
+                        await SyncWithEquipmentDatabaseAsync(true); // true = Initial Mapping Mode
+                    }
+                    else
+                    {
+                        _logManager.LogError("[LampLifeService] Initial UI Collection failed. Skipping MSSQL mapping.");
+                    }
+
+                    // [Step 3] 주기적 MSSQL 폴링 스케줄러 시작 (1시간 간격)
+                    _schedular = new System.Threading.Timer(async _ =>
+                    {
+                        if (!_isRunning) return;
+                        await SyncWithEquipmentDatabaseAsync(false); // false = Update Mode
+                    }, null, UPDATE_INTERVAL_MS, UPDATE_INTERVAL_MS);
+                });
             }
         }
 
@@ -75,36 +93,20 @@ namespace ITM_Agent.Services
         {
             lock (_lock)
             {
-                if (!_isRunning)
-                {
-                    return;
-                }
-                _logManager.LogEvent("[LampLifeService] Stopping...");
-                _collectTimer?.Dispose();
-                _collectTimer = null;
+                if (!_isRunning) return;
                 _isRunning = false;
-                _logManager.LogEvent("[LampLifeService] Stopped.");
+                _schedular?.Dispose();
+                _schedular = null;
+                _logManager.LogEvent("[LampLifeService] Service Stopped.");
             }
         }
 
-        private async void OnTimerElapsed(object state)
+        /// <summary>
+        /// [Step 1] 기존 UI 자동화 로직 (1회성 실행용)
+        /// </summary>
+        public async Task<bool> ExecuteUiCollectionAsync()
         {
-            try
-            {
-                _logManager.LogEvent("[LampLifeService] Collection task started.");
-                bool success = await ExecuteCollectionAsync();
-                CollectionCompleted?.Invoke(success, DateTime.Now);
-                _logManager.LogEvent($"[LampLifeService] Collection task finished. Success: {success}");
-            }
-            catch (Exception ex)
-            {
-                _logManager.LogError($"[LampLifeService] Unhandled exception during collection: {ex.Message}");
-                CollectionCompleted?.Invoke(false, DateTime.Now);
-            }
-        }
-
-        public async Task<bool> ExecuteCollectionAsync()
-        {
+            // (수동 실행 시 외부 호출 가능하도록 public 유지)
             var collectedLamps = new List<LampInfo>();
 
             try
@@ -116,62 +118,53 @@ namespace ITM_Agent.Services
                 using (var automation = new UIA3Automation())
                 {
                     var mainWindow = app.GetMainWindow(automation);
-
                     mainWindow.SetForeground();
                     await Task.Delay(500);
 
-                    // 1. 'Processing' 버튼을 먼저 클릭하여 UI 상태를 초기화합니다.
-                    var processingButton = mainWindow.FindFirstDescendant(cf => cf.ByName("Processing").And(cf.ByControlType(ControlType.Button)))?.AsButton();
-                    if (processingButton == null && Environment.Is64BitOperatingSystem) { processingButton = mainWindow.FindFirstDescendant(cf => cf.ByAutomationId("25003"))?.AsButton(); }
-                    if (processingButton == null) throw new Exception("UI Automation: 'Processing' 버튼을 찾을 수 없습니다.");
+                    // UI 조작 (Processing -> System -> Lamps 탭)
+                    var processingButton = FindButton(mainWindow, "Processing", "25003");
+                    if (processingButton == null) throw new Exception("'Processing' button not found.");
                     processingButton.Click();
                     await Task.Delay(500);
 
-                    // 2. 'System' 버튼을 클릭합니다.
-                    var systemButton = mainWindow.FindFirstDescendant(cf => cf.ByName("System").And(cf.ByControlType(ControlType.Button)))?.AsButton();
-                    if (systemButton == null && Environment.Is64BitOperatingSystem) { systemButton = mainWindow.FindFirstDescendant(cf => cf.ByAutomationId("25004"))?.AsButton(); }
-                    if (systemButton == null) throw new Exception("UI Automation: 'System' 버튼을 찾을 수 없습니다.");
+                    var systemButton = FindButton(mainWindow, "System", "25004");
+                    if (systemButton == null) throw new Exception("'System' button not found.");
                     systemButton.Click();
                     await Task.Delay(500);
 
-                    // 3. 탭들을 포함하는 부모 'TabControl'이 나타날 때까지 기다립니다.
                     var tabControl = FindElementWithRetry(mainWindow, cf => cf.ByControlType(ControlType.Tab));
-                    if (tabControl == null) throw new Exception("UI Automation: TabControl을 찾을 수 없습니다. (Timeout)");
-
-                    // 4. TabControl 안에서 'Lamps' 탭을 찾아 클릭합니다. (Status 탭 클릭 과정 생략)
                     var lampsTab = FindElementWithRetry(tabControl, cf => cf.ByName("Lamps").And(cf.ByControlType(ControlType.TabItem)))?.AsTabItem();
-                    if (lampsTab == null) throw new Exception("UI Automation: 'Lamps' 탭을 찾을 수 없습니다. (Timeout)");
-                    lampsTab.Click(); // .Select() 대신 .Click() 사용
-                    await Task.Delay(1000);
-
-                    var lampList = mainWindow.FindFirstDescendant(cf => cf.ByAutomationId("10819").And(cf.ByControlType(ControlType.List)))?.AsListBox();
-                    if (lampList == null) throw new Exception("UI Automation: 'Lamp Status' 목록(ID:10819)을 찾을 수 없습니다.");
-                    var lampItems = lampList.FindAllChildren(cf => cf.ByControlType(ControlType.ListItem));
-
-                    if (lampItems != null)
+                    if (lampsTab != null)
                     {
-                        foreach (var item in lampItems)
+                        lampsTab.Click();
+                        await Task.Delay(1000);
+
+                        var lampList = mainWindow.FindFirstDescendant(cf => cf.ByAutomationId("10819").And(cf.ByControlType(ControlType.List)))?.AsListBox();
+                        if (lampList != null)
                         {
-                            var cells = item.FindAllDescendants(cf => cf.ByControlType(ControlType.Text));
-                            if (cells.Length > 4)
+                            foreach (var item in lampList.FindAllChildren(cf => cf.ByControlType(ControlType.ListItem)))
                             {
-                                var newLamp = new LampInfo { LampId = cells[0].Name, Age = cells[1].Name, LifeSpan = cells[2].Name, LastChanged = cells[4].Name };
-                                if (!string.IsNullOrEmpty(newLamp.LampId))
-                                    collectedLamps.Add(newLamp);
+                                var cells = item.FindAllDescendants(cf => cf.ByControlType(ControlType.Text));
+                                if (cells.Length > 4)
+                                {
+                                    collectedLamps.Add(new LampInfo
+                                    {
+                                        LampName = cells[0].Name, // UI상의 이름
+                                        Age = cells[1].Name,
+                                        LifeSpan = cells[2].Name,
+                                        LastChanged = cells[4].Name
+                                    });
+                                }
                             }
                         }
                     }
-
-                    // 5. 작업 완료 후, 다시 'Processing' 버튼을 클릭하여 원래 화면으로 복귀합니다.
-                    processingButton = mainWindow.FindFirstDescendant(cf => cf.ByName("Processing").And(cf.ByControlType(ControlType.Button)))?.AsButton();
-                    if (processingButton == null && Environment.Is64BitOperatingSystem) { processingButton = mainWindow.FindFirstDescendant(cf => cf.ByAutomationId("25003"))?.AsButton(); }
-                    if (processingButton == null) throw new Exception("UI Automation: 'Processing' 버튼을 찾을 수 없습니다.");
+                    // 복귀
                     processingButton.Click();
                 }
             }
             catch (Exception ex)
             {
-                _logManager.LogError($"[LampLifeService] UI Automation failed: {ex.Message}");
+                _logManager.LogError($"[LampLifeService] UI Automation Error: {ex.Message}");
                 return false;
             }
             finally
@@ -181,117 +174,282 @@ namespace ITM_Agent.Services
 
             if (collectedLamps.Count > 0)
             {
-                string eqpid = _settingsManager.GetEqpid();
-                if (string.IsNullOrEmpty(eqpid))
-                {
-                    _logManager.LogError("[LampLifeService] Eqpid not found. Aborting DB upload.");
-                    return false;
-                }
-                try
-                {
-                    DataTable lampDataTable = ParseLampInfoToDataTable(collectedLamps, eqpid);
-                    UploadToDatabase(lampDataTable);
-                    _logManager.LogEvent($"[LampLifeService] SUCCESS - Uploaded {lampDataTable.Rows.Count} lamp records.");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    _logManager.LogError($"[LampLifeService] DB upload failed: {ex.Message}");
-                    return false;
-                }
-            }
-            else
-            {
-                _logManager.LogEvent("[LampLifeService] No lamp data collected to upload.");
+                UploadToPostgres(collectedLamps); // 1차 저장 (lamp_no는 null 상태)
+                CollectionCompleted?.Invoke(true, DateTime.Now);
                 return true;
             }
+            return false;
         }
 
-        private AutomationElement FindElementWithRetry(AutomationElement parent, Func<ConditionFactory, ConditionBase> conditionFunc, int timeoutMs = 5000)
+        /// <summary>
+        /// [Step 2 & 3] 장비 MSSQL 접속 및 데이터 동기화
+        /// </summary>
+        /// <param name="isInitialMapping">true: 이름-시간 매칭하여 ID 찾기 / false: ID로 최신 시간 업데이트</param>
+        private async Task SyncWithEquipmentDatabaseAsync(bool isInitialMapping)
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            AutomationElement element = null;
-            while (stopwatch.ElapsedMilliseconds < timeoutMs)
+            try
             {
-                element = parent.FindFirstDescendant(conditionFunc);
-                if (element != null) break;
-                Thread.Sleep(200);
+                string connectionString = FindMssqlConnectionString();
+                if (string.IsNullOrEmpty(connectionString))
+                {
+                    _logManager.LogError("[LampLifeService] Could not find a valid Local MSSQL instance.");
+                    return;
+                }
+
+                _logManager.LogDebug($"[LampLifeService] Connecting to Equipment DB: {connectionString}");
+
+                using (var conn = new SqlConnection(connectionString))
+                {
+                    await conn.OpenAsync();
+
+                    // 장비 DB에서 최근 50건 로그 조회
+                    // (테이블명은 예시인 tblLampChangeLog 사용, 실제 환경에 맞춰 수정 필요)
+                    string query = @"
+                        SELECT TOP 50 LogTime, LampID 
+                        FROM tblLampChangeLog 
+                        ORDER BY LogTime DESC";
+
+                    var mssqlLogs = new List<(DateTime LogTime, int LampID)>();
+                    using (var cmd = new SqlCommand(query, conn))
+                    using (var reader = await cmd.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0) && !reader.IsDBNull(1))
+                            {
+                                mssqlLogs.Add((reader.GetDateTime(0), reader.GetInt32(1)));
+                            }
+                        }
+                    }
+
+                    if (mssqlLogs.Count == 0)
+                    {
+                        _logManager.LogEvent("[LampLifeService] No logs found in Equipment DB.");
+                        return;
+                    }
+
+                    // PostgreSQL 데이터와 비교 및 업데이트
+                    await UpdatePostgresWithMssqlData(mssqlLogs, isInitialMapping);
+                }
             }
-            return element;
+            catch (Exception ex)
+            {
+                _logManager.LogError($"[LampLifeService] MSSQL Sync Failed: {ex.Message}");
+            }
         }
 
-        private DataTable ParseLampInfoToDataTable(List<LampInfo> lamps, string eqpid)
+        private async Task UpdatePostgresWithMssqlData(List<(DateTime LogTime, int LampID)> mssqlLogs, bool isMappingMode)
         {
-            var dt = new DataTable();
-            dt.Columns.Add("eqpid", typeof(string));
-            dt.Columns.Add("ts", typeof(DateTime));
-            dt.Columns.Add("lamp_id", typeof(string));
-            dt.Columns.Add("age_hour", typeof(int));
-            dt.Columns.Add("lifespan_hour", typeof(int));
-            dt.Columns.Add("last_changed", typeof(DateTime));
-            dt.Columns.Add("serv_ts", typeof(DateTime));
-
-            DateTime now = DateTime.Now;
-            DateTime agent_time = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, now.Second);
-            DateTime server_time_kst = TimeSyncProvider.Instance.ToSynchronizedKst(agent_time);
-            DateTime server_time = new DateTime(server_time_kst.Year, server_time_kst.Month, server_time_kst.Day, server_time_kst.Hour, server_time_kst.Minute, server_time_kst.Second);
-
-            foreach (var lamp in lamps)
+            string pgCs = DatabaseInfo.CreateDefault().GetConnectionString();
+            using (var pgConn = new NpgsqlConnection(pgCs))
             {
-                DataRow row = dt.NewRow();
-                row["eqpid"] = eqpid;
-                row["ts"] = agent_time;
-                row["serv_ts"] = server_time;
-                row["lamp_id"] = lamp.LampId;
+                await pgConn.OpenAsync();
+                string eqpid = _settingsManager.GetEqpid();
 
-                if (int.TryParse(lamp.Age, out int age)) row["age_hour"] = age;
-                if (int.TryParse(lamp.LifeSpan, out int lifespan)) row["lifespan_hour"] = lifespan;
-                if (DateTime.TryParse(lamp.LastChanged, out DateTime lastChanged)) row["last_changed"] = lastChanged;
+                // 현재 저장된 데이터 조회
+                var currentData = new List<(string LampName, int? LampNo, DateTime LastChanged)>();
+                using (var cmd = new NpgsqlCommand("SELECT lamp_name, lamp_no, last_changed FROM public.eqp_lamp_life WHERE eqpid = @eqpid", pgConn))
+                {
+                    cmd.Parameters.AddWithValue("@eqpid", eqpid);
+                    using (var reader = await cmd.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            string name = reader.GetString(0);
+                            int? no = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
+                            DateTime changed = reader.GetDateTime(2);
+                            currentData.Add((name, no, changed));
+                        }
+                    }
+                }
 
-                dt.Rows.Add(row);
+                foreach (var pgRow in currentData)
+                {
+                    if (isMappingMode)
+                    {
+                        // [매핑 모드] 시간(초 단위까지)이 일치하는 항목을 찾아 LampID(lamp_no) 업데이트
+                        // MSSQL의 LogTime과 PostgreSQL의 last_changed 비교
+                        var match = mssqlLogs.FirstOrDefault(m => Math.Abs((m.LogTime - pgRow.LastChanged).TotalSeconds) < 2);
+
+                        if (match.LampID > 0)
+                        {
+                            // 매핑 발견! lamp_no 업데이트
+                            using (var updateCmd = new NpgsqlCommand("UPDATE public.eqp_lamp_life SET lamp_no = @no WHERE eqpid = @eqpid AND lamp_name = @name", pgConn))
+                            {
+                                updateCmd.Parameters.AddWithValue("@no", match.LampID);
+                                updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
+                                updateCmd.Parameters.AddWithValue("@name", pgRow.LampName);
+                                await updateCmd.ExecuteNonQueryAsync();
+                                _logManager.LogEvent($"[LampLifeService] Mapped '{pgRow.LampName}' -> LampID {match.LampID}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // [업데이트 모드] lamp_no가 있는 항목에 대해, MSSQL의 더 최신 로그가 있는지 확인
+                        if (pgRow.LampNo.HasValue)
+                        {
+                            var latestLog = mssqlLogs
+                                .Where(m => m.LampID == pgRow.LampNo.Value)
+                                .OrderByDescending(m => m.LogTime)
+                                .FirstOrDefault();
+
+                            if (latestLog.LampID > 0 && latestLog.LogTime > pgRow.LastChanged)
+                            {
+                                // 새로운 교체 이력 발견 -> 업데이트
+                                // Age는 (현재시간 - 교체시간)으로 자동 계산
+                                int newAge = (int)(DateTime.Now - latestLog.LogTime).TotalHours;
+
+                                string updateSql = @"
+                                    UPDATE public.eqp_lamp_life 
+                                    SET last_changed = @ts, age_hour = @age, serv_ts = NOW()::timestamp(0)
+                                    WHERE eqpid = @eqpid AND lamp_no = @no";
+
+                                using (var updateCmd = new NpgsqlCommand(updateSql, pgConn))
+                                {
+                                    updateCmd.Parameters.AddWithValue("@ts", latestLog.LogTime);
+                                    updateCmd.Parameters.AddWithValue("@age", newAge);
+                                    updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
+                                    updateCmd.Parameters.AddWithValue("@no", pgRow.LampNo.Value);
+                                    await updateCmd.ExecuteNonQueryAsync();
+                                    _logManager.LogEvent($"[LampLifeService] Updated '{pgRow.LampName}' (ID:{pgRow.LampNo}) : New Change Time {latestLog.LogTime}");
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            return dt;
         }
 
-        private void UploadToDatabase(DataTable dt)
+        /// <summary>
+        /// 로컬 레지스트리를 검색하여 SQL Server 인스턴스 이름을 찾고 연결 문자열 생성
+        /// </summary>
+        private string FindMssqlConnectionString()
+        {
+            string instanceName = null;
+            string hostName = Environment.MachineName;
+
+            try
+            {
+                // 레지스트리에서 설치된 SQL 인스턴스 검색
+                using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL"))
+                {
+                    if (key != null)
+                    {
+                        foreach (var name in key.GetValueNames())
+                        {
+                            // "SQLSERVER"가 포함된 인스턴스 우선 검색 (대소문자 무시)
+                            if (name.IndexOf("SQLSERVER", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                instanceName = name;
+                                break;
+                            }
+                        }
+                        // 없으면 첫 번째꺼라도 사용
+                        if (instanceName == null && key.GetValueNames().Length > 0)
+                        {
+                            instanceName = key.GetValueNames()[0];
+                        }
+                    }
+                }
+            }
+            catch { /* 권한 문제 등으로 실패 시 무시 */ }
+
+            if (string.IsNullOrEmpty(instanceName))
+            {
+                // 발견 못했으면 기본값 시도
+                instanceName = "SQLEXPRESS"; 
+            }
+
+            string dataSource = $"{hostName}\\{instanceName}";
+            
+            // Windows 통합 인증 사용
+            return $"Data Source={dataSource};Initial Catalog=N2000_MEASURE;Integrated Security=True;TrustServerCertificate=True;";
+        }
+
+        /// <summary>
+        /// PostgreSQL 테이블 스키마 변경 (최초 1회 실행)
+        /// lamp_id -> lamp_name 변경 및 lamp_no 컬럼 추가
+        /// </summary>
+        private void MigrateDatabaseSchema()
+        {
+            try
+            {
+                string cs = DatabaseInfo.CreateDefault().GetConnectionString();
+                using (var conn = new NpgsqlConnection(cs))
+                {
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"
+                            DO $$ 
+                            BEGIN 
+                                -- 1. lamp_id 컬럼이 있으면 lamp_name으로 변경
+                                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='lamp_id') THEN
+                                    ALTER TABLE public.eqp_lamp_life RENAME COLUMN lamp_id TO lamp_name;
+                                END IF;
+
+                                -- 2. lamp_no 컬럼이 없으면 추가
+                                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='lamp_no') THEN
+                                    ALTER TABLE public.eqp_lamp_life ADD COLUMN lamp_no INTEGER NULL;
+                                END IF;
+                            END $$;";
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logManager.LogError($"[LampLifeService] Schema Migration Failed: {ex.Message}");
+            }
+        }
+
+        private void UploadToPostgres(List<LampInfo> lamps)
         {
             var dbInfo = DatabaseInfo.CreateDefault();
+            string eqpid = _settingsManager.GetEqpid();
+
             using (var conn = new NpgsqlConnection(dbInfo.GetConnectionString()))
             {
                 conn.Open();
                 using (var tx = conn.BeginTransaction())
                 {
+                    // lamp_name 기준 Upsert (lamp_no는 건드리지 않음)
                     const string sql = @"
                         INSERT INTO public.eqp_lamp_life 
-                            (eqpid, lamp_id, ts, age_hour, lifespan_hour, last_changed, serv_ts)
+                            (eqpid, lamp_name, ts, age_hour, lifespan_hour, last_changed, serv_ts)
                         VALUES 
-                            (@eqpid, @lamp_id, @ts, @age_hour, @lifespan_hour, @last_changed, @serv_ts)
-                        ON CONFLICT (eqpid, lamp_id) DO UPDATE SET
+                            (@eqpid, @name, @ts, @age, @life, @changed, NOW()::timestamp(0))
+                        ON CONFLICT (eqpid, lamp_name) DO UPDATE SET
                             ts = EXCLUDED.ts,
                             age_hour = EXCLUDED.age_hour,
                             lifespan_hour = EXCLUDED.lifespan_hour,
                             last_changed = EXCLUDED.last_changed,
-                            serv_ts = EXCLUDED.serv_ts;";
+                            serv_ts = NOW()::timestamp(0);";
 
                     using (var cmd = new NpgsqlCommand(sql, conn, tx))
                     {
                         cmd.Parameters.Add("@eqpid", NpgsqlTypes.NpgsqlDbType.Varchar);
-                        cmd.Parameters.Add("@lamp_id", NpgsqlTypes.NpgsqlDbType.Varchar);
+                        cmd.Parameters.Add("@name", NpgsqlTypes.NpgsqlDbType.Varchar);
                         cmd.Parameters.Add("@ts", NpgsqlTypes.NpgsqlDbType.Timestamp);
-                        cmd.Parameters.Add("@age_hour", NpgsqlTypes.NpgsqlDbType.Integer);
-                        cmd.Parameters.Add("@lifespan_hour", NpgsqlTypes.NpgsqlDbType.Integer);
-                        cmd.Parameters.Add("@last_changed", NpgsqlTypes.NpgsqlDbType.Timestamp);
-                        cmd.Parameters.Add("@serv_ts", NpgsqlTypes.NpgsqlDbType.Timestamp);
+                        cmd.Parameters.Add("@age", NpgsqlTypes.NpgsqlDbType.Integer);
+                        cmd.Parameters.Add("@life", NpgsqlTypes.NpgsqlDbType.Integer);
+                        cmd.Parameters.Add("@changed", NpgsqlTypes.NpgsqlDbType.Timestamp);
 
-                        foreach (DataRow row in dt.Rows)
+                        foreach (var lamp in lamps)
                         {
-                            cmd.Parameters["@eqpid"].Value = row["eqpid"];
-                            cmd.Parameters["@lamp_id"].Value = row["lamp_id"];
-                            cmd.Parameters["@ts"].Value = row["ts"];
-                            cmd.Parameters["@age_hour"].Value = row["age_hour"];
-                            cmd.Parameters["@lifespan_hour"].Value = row["lifespan_hour"];
-                            cmd.Parameters["@last_changed"].Value = row["last_changed"];
-                            cmd.Parameters["@serv_ts"].Value = row["serv_ts"];
+                            cmd.Parameters["@eqpid"].Value = eqpid;
+                            cmd.Parameters["@name"].Value = lamp.LampName;
+                            cmd.Parameters["@ts"].Value = DateTime.Now;
+
+                            if (int.TryParse(lamp.Age, out int age)) cmd.Parameters["@age"].Value = age;
+                            else cmd.Parameters["@age"].Value = 0;
+
+                            if (int.TryParse(lamp.LifeSpan, out int life)) cmd.Parameters["@life"].Value = life;
+                            else cmd.Parameters["@life"].Value = 0;
+
+                            if (DateTime.TryParse(lamp.LastChanged, out DateTime changed)) cmd.Parameters["@changed"].Value = changed;
+                            else cmd.Parameters["@changed"].Value = DBNull.Value;
 
                             cmd.ExecuteNonQuery();
                         }
@@ -299,6 +457,29 @@ namespace ITM_Agent.Services
                     tx.Commit();
                 }
             }
+        }
+
+        // --- UI Helper Methods ---
+        private FlaUI.Core.AutomationElements.Button FindButton(Window window, string name, string autoId)
+        {
+            var btn = window.FindFirstDescendant(cf => cf.ByName(name).And(cf.ByControlType(ControlType.Button)))?.AsButton();
+            if (btn == null && Environment.Is64BitOperatingSystem)
+            {
+                btn = window.FindFirstDescendant(cf => cf.ByAutomationId(autoId))?.AsButton();
+            }
+            return btn;
+        }
+
+        private AutomationElement FindElementWithRetry(AutomationElement parent, Func<ConditionFactory, ConditionBase> conditionFunc, int timeoutMs = 5000)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            while (stopwatch.ElapsedMilliseconds < timeoutMs)
+            {
+                var element = parent.FindFirstDescendant(conditionFunc);
+                if (element != null) return element;
+                Thread.Sleep(200);
+            }
+            return null;
         }
     }
 }
