@@ -107,7 +107,8 @@ namespace ITM_Agent.Services
                 _mainForm.ShowTemporarilyForAutomation();
                 await Task.Delay(500);
 
-                var app = FlaUI.Core.Application.Attach(PROCESS_NAME);
+                // [수정] Application 객체도 IDisposable이므로 using으로 감싸 핸들 누수 방지
+                using (var app = FlaUI.Core.Application.Attach(PROCESS_NAME))
                 using (var automation = new UIA3Automation())
                 {
                     var mainWindow = app.GetMainWindow(automation);
