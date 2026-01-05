@@ -41,15 +41,10 @@ namespace ITM_Agent.ucPanel
 
             InitializeComponent();
 
-            // 중복 할당 제거 (위에서 이미 할당함)
-
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            // logManager가 주입되었으므로 별도 생성하지 않고 주입된 인스턴스 사용
-            // 만약 별도 인스턴스가 필요하다면 new LogManager(baseDir) 사용 가능하나, 주입된 것을 권장
 
             if (settingsManager.IsDebugMode)
             {
-                // Debug Log 예시
                 logManager.LogDebug("[ucOverrideNamesPanel] 생성자 호출 - 초기화 시작");
             }
 
@@ -63,7 +58,6 @@ namespace ITM_Agent.ucPanel
 
             if (settingsManager.IsDebugMode)
             {
-                // Debug Log 예시
                 logManager.LogDebug("[ucOverrideNamesPanel] 생성자 호출 - 초기화 완료");
             }
         }
@@ -473,15 +467,16 @@ namespace ITM_Agent.ucPanel
             return false;
         }
 
+        // [수정] 대용량 파일 OOM 방지 및 파일 잠금 시간 최소화
         private DateTime? ExtractDateTimeFromFile(string filePath)
         {
             string datePattern = @"Date and Time:\s*(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2} (AM|PM))";
             const int maxRetries = 5;
             const int delayMs = 1000;
+            const int maxBytesToRead = 8192; // 8KB만 읽음 (헤더 정보 추출용)
 
             if (settingsManager.IsDebugMode)
             {
-                // Debug Log
                 logManager.LogDebug($"[ucOverrideNamesPanel] ExtractDateTimeFromFile() - 파일: {filePath}");
             }
 
@@ -494,7 +489,11 @@ namespace ITM_Agent.ucPanel
                         using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         using (var reader = new StreamReader(fileStream))
                         {
-                            string fileContent = reader.ReadToEnd();
+                            // [핵심 변경] 전체 파일을 읽지 않고 앞부분 버퍼만 읽음
+                            char[] buffer = new char[maxBytesToRead];
+                            int charsRead = reader.Read(buffer, 0, buffer.Length);
+                            string fileContent = new string(buffer, 0, charsRead);
+
                             Match match = Regex.Match(fileContent, datePattern);
                             if (match.Success && DateTime.TryParse(match.Groups[1].Value, out DateTime result))
                             {
@@ -505,6 +504,12 @@ namespace ITM_Agent.ucPanel
                     catch (IOException ex)
                     {
                         logManager.LogError($"[ucOverrideNamesPanel] 파일 읽기 중 오류 발생: {ex.Message}\n파일: {filePath}");
+                        return null;
+                    }
+                    catch (OutOfMemoryException)
+                    {
+                        // 혹시라도 발생할 경우를 대비한 안전장치
+                        logManager.LogError($"[ucOverrideNamesPanel] 메모리 부족 오류 (파일이 너무 큼): {filePath}");
                         return null;
                     }
                 }
