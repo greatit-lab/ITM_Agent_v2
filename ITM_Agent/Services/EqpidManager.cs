@@ -83,7 +83,6 @@ namespace ITM_Agent.Services
             else
             {
                 logManager.LogEvent($"[EqpidManager] Eqpid found: {eqpid}");
-                // 기존 UploadAgentInfoToDatabase -> 신규 RegisterOrUpdateAgentInfo로 변경
                 RegisterOrUpdateAgentInfo(eqpid, settingsManager.GetEqpType());
             }
         }
@@ -116,16 +115,13 @@ namespace ITM_Agent.Services
             }
         }
 
-        // 메서드명 변경 및 로직 분리
         private void RegisterOrUpdateAgentInfo(string eqpid, string type)
         {
-            // (1) agent_info 테이블 업데이트 (기존 UploadAgentInfoToDatabase 로직)
             UploadAgentInfoToDatabase(eqpid, type);
         }
 
         private void UploadAgentInfoToDatabase(string eqpid, string type)
         {
-            // Connection.ini를 읽도록 수정된 DatabaseInfo.cs를 호출
             string connString;
             try
             {
@@ -277,79 +273,115 @@ namespace ITM_Agent.Services
 
     public static class SystemInfoCollector
     {
-        private static ManagementObjectCollection GetWmiQueryResult(string wmiClass, string property)
+        // ▼▼▼ [중요 수정] WMI 객체 누수 방지를 위한 안전한 실행 헬퍼 메서드 ▼▼▼
+        private static T ExecuteWmiQuery<T>(string wmiClass, string property, Func<ManagementObjectCollection, T> handler)
         {
             try
             {
-                var searcher = new ManagementObjectSearcher($"SELECT {property} FROM {wmiClass}");
-                return searcher.Get();
+                using (var searcher = new ManagementObjectSearcher($"SELECT {property} FROM {wmiClass}"))
+                using (var collection = searcher.Get())
+                {
+                    return handler(collection);
+                }
             }
-            catch { return null; }
+            catch
+            {
+                return default;
+            }
         }
 
         public static string GetOsArchitecture() => Environment.Is64BitOperatingSystem ? "64-bit" : "32-bit";
 
         public static string GetFormattedCpuInfo()
         {
-            try
+            return ExecuteWmiQuery("Win32_Processor", "Name", (collection) =>
             {
-                var cpu = GetWmiQueryResult("Win32_Processor", "Name")?.Cast<ManagementObject>().FirstOrDefault();
-                if (cpu == null) return "N/A";
-
-                string cpuName = cpu["Name"]?.ToString().Trim() ?? "";
-                cpuName = Regex.Replace(cpuName, @"\(R\)|\(TM\)|CPU|Processor|Gen", "").Trim();
-                cpuName = Regex.Replace(cpuName, @"\s+", " ");
-                var match = Regex.Match(cpuName, @"(Intel Core i\d-\d+\w*|AMD Ryzen \d \d+\w*)\s*@\s*(\d\.\d+\wHz)");
-                if (match.Success)
+                foreach (var item in collection)
                 {
-                    return $"{match.Groups[1].Value.Replace("Core ", "")} {match.Groups[2].Value}";
+                    using (item) // 개별 아이템 Dispose 필수
+                    {
+                        string cpuName = item["Name"]?.ToString().Trim() ?? "";
+                        if (string.IsNullOrEmpty(cpuName)) continue;
+
+                        cpuName = Regex.Replace(cpuName, @"\(R\)|\(TM\)|CPU|Processor|Gen", "").Trim();
+                        cpuName = Regex.Replace(cpuName, @"\s+", " ");
+                        var match = Regex.Match(cpuName, @"(Intel Core i\d-\d+\w*|AMD Ryzen \d \d+\w*)\s*@\s*(\d\.\d+\wHz)");
+                        if (match.Success)
+                        {
+                            return $"{match.Groups[1].Value.Replace("Core ", "")} {match.Groups[2].Value}";
+                        }
+                        return cpuName;
+                    }
                 }
-                return cpuName;
-            }
-            catch { return "N/A"; }
+                return "N/A";
+            }) ?? "N/A";
         }
 
-        // ▼▼▼ [핵심 수정] 메모리 정보 조회 로직 안정성 강화 ▼▼▼
         public static string GetFormattedMemoryInfo()
         {
             try
             {
                 double totalMemoryGB = 0;
-                // 1순위: Win32_OperatingSystem (KB 단위, 더 안정적)
-                var os = GetWmiQueryResult("Win32_OperatingSystem", "TotalVisibleMemorySize")?.Cast<ManagementObject>().FirstOrDefault();
-                if (os != null && os["TotalVisibleMemorySize"] != null)
+
+                // 1. Win32_OperatingSystem 조회
+                ExecuteWmiQuery("Win32_OperatingSystem", "TotalVisibleMemorySize", (collection) =>
                 {
-                    totalMemoryGB = Math.Round(Convert.ToDouble(os["TotalVisibleMemorySize"]) / (1024 * 1024));
-                }
-                else // 2순위: Win32_ComputerSystem (Byte 단위)
-                {
-                    var cs = GetWmiQueryResult("Win32_ComputerSystem", "TotalPhysicalMemory")?.Cast<ManagementObject>().FirstOrDefault();
-                    if (cs != null && cs["TotalPhysicalMemory"] != null)
+                    foreach (var item in collection)
                     {
-                        totalMemoryGB = Math.Round(Convert.ToDouble(cs["TotalPhysicalMemory"]) / (1024 * 1024 * 1024));
+                        using (item)
+                        {
+                            if (item["TotalVisibleMemorySize"] != null)
+                            {
+                                totalMemoryGB = Math.Round(Convert.ToDouble(item["TotalVisibleMemorySize"]) / (1024 * 1024));
+                            }
+                        }
                     }
+                    return 0; // 더미 반환
+                });
+
+                // 실패 시 2. Win32_ComputerSystem 조회
+                if (totalMemoryGB <= 0)
+                {
+                    ExecuteWmiQuery("Win32_ComputerSystem", "TotalPhysicalMemory", (collection) =>
+                    {
+                        foreach (var item in collection)
+                        {
+                            using (item)
+                            {
+                                if (item["TotalPhysicalMemory"] != null)
+                                {
+                                    totalMemoryGB = Math.Round(Convert.ToDouble(item["TotalPhysicalMemory"]) / (1024 * 1024 * 1024));
+                                }
+                            }
+                        }
+                        return 0;
+                    });
                 }
 
                 if (totalMemoryGB <= 0) return "N/A";
 
+                // 3. 메모리 타입 조회
                 string memoryType = "Unknown";
-                var memoryDevices = GetWmiQueryResult("Win32_PhysicalMemory", "SMBIOSMemoryType, MemoryType")?.Cast<ManagementObject>();
-                if (memoryDevices != null)
+                ExecuteWmiQuery("Win32_PhysicalMemory", "SMBIOSMemoryType, MemoryType", (collection) =>
                 {
-                    foreach (var device in memoryDevices)
+                    foreach (var device in collection)
                     {
-                        if (device["SMBIOSMemoryType"] != null)
+                        using (device)
                         {
-                            string type = GetMemoryTypeFromSmbios(device["SMBIOSMemoryType"].ToString());
-                            if (type != "Unknown") { memoryType = type; break; }
-                        }
-                        if (memoryType == "Unknown" && device["MemoryType"] != null)
-                        {
-                            string type = GetMemoryTypeFromGeneral(device["MemoryType"].ToString());
-                            if (type != "Unknown") { memoryType = type; break; }
+                            if (device["SMBIOSMemoryType"] != null)
+                            {
+                                string type = GetMemoryTypeFromSmbios(device["SMBIOSMemoryType"].ToString());
+                                if (type != "Unknown") { memoryType = type; return 0; }
+                            }
+                            if (memoryType == "Unknown" && device["MemoryType"] != null)
+                            {
+                                string type = GetMemoryTypeFromGeneral(device["MemoryType"].ToString());
+                                if (type != "Unknown") { memoryType = type; return 0; }
+                            }
                         }
                     }
-                }
+                    return 0;
+                });
 
                 return (memoryType != "Unknown") ? $"{memoryType} {totalMemoryGB}GB" : $"{totalMemoryGB}GB";
             }
@@ -384,48 +416,47 @@ namespace ITM_Agent.Services
 
         public static string GetFormattedDiskInfo()
         {
-            try
+            return ExecuteWmiQuery("Win32_LogicalDisk WHERE DriveType = 3", "DeviceID, Size", (collection) =>
             {
                 var partitionInfos = new List<string>();
-                var logicalDisks = new ManagementObjectSearcher("SELECT * FROM Win32_LogicalDisk WHERE DriveType = 3").Get().Cast<ManagementObject>();
-
-                foreach (var logicalDisk in logicalDisks)
+                foreach (var item in collection)
                 {
-                    var deviceID = logicalDisk["DeviceID"]?.ToString();
-                    if (deviceID == null) continue;
+                    using (item)
+                    {
+                        var deviceID = item["DeviceID"]?.ToString();
+                        if (deviceID == null) continue;
 
-                    var totalSizeBytes = Convert.ToUInt64(logicalDisk["Size"]);
-                    var totalSizeGB = Math.Round((double)totalSizeBytes / (1024 * 1024 * 1024), 2);
-
-                    partitionInfos.Add($"{deviceID} {totalSizeGB:F2}GB");
+                        var totalSizeBytes = Convert.ToUInt64(item["Size"]);
+                        var totalSizeGB = Math.Round((double)totalSizeBytes / (1024 * 1024 * 1024), 2);
+                        partitionInfos.Add($"{deviceID} {totalSizeGB:F2}GB");
+                    }
                 }
                 return string.Join(" / ", partitionInfos);
-            }
-            catch { return "N/A"; }
+            }) ?? "N/A";
         }
 
         public static string GetFormattedVgaInfo()
         {
-            try
+            return ExecuteWmiQuery("Win32_VideoController", "Name, AdapterRAM", (collection) =>
             {
-                var controllers = GetWmiQueryResult("Win32_VideoController", "Name, AdapterRAM");
-                if (controllers == null) return "N/A";
-
                 var vgaList = new List<Tuple<string, double>>();
-                foreach (var controller in controllers.Cast<ManagementObject>())
+                foreach (var item in collection)
                 {
-                    string name = controller["Name"]?.ToString();
-                    object ramObj = controller["AdapterRAM"];
-
-                    if (string.IsNullOrEmpty(name) || name.Contains("Microsoft Basic") || name.Contains("Mirage"))
-                        continue;
-
-                    double ramMB = 0;
-                    if (ramObj != null && double.TryParse(ramObj.ToString(), out double ramBytes))
+                    using (item)
                     {
-                        ramMB = Math.Round(ramBytes / (1024 * 1024), 0);
+                        string name = item["Name"]?.ToString();
+                        object ramObj = item["AdapterRAM"];
+
+                        if (string.IsNullOrEmpty(name) || name.Contains("Microsoft Basic") || name.Contains("Mirage"))
+                            continue;
+
+                        double ramMB = 0;
+                        if (ramObj != null && double.TryParse(ramObj.ToString(), out double ramBytes))
+                        {
+                            ramMB = Math.Round(ramBytes / (1024 * 1024), 0);
+                        }
+                        vgaList.Add(Tuple.Create(name, ramMB));
                     }
-                    vgaList.Add(Tuple.Create(name, ramMB));
                 }
 
                 if (!vgaList.Any()) return "N/A";
@@ -435,17 +466,29 @@ namespace ITM_Agent.Services
                     vga.Item1.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0);
 
                 if (discreteGpu != null)
-                {
                     return $"{discreteGpu.Item1} ({discreteGpu.Item2} MB)";
-                }
 
                 var firstGpu = vgaList.First();
                 return $"{firstGpu.Item1} ({firstGpu.Item2} MB)";
-            }
-            catch { return "N/A"; }
+
+            }) ?? "N/A";
         }
 
-        public static string GetOSVersion() => GetWmiQueryResult("Win32_OperatingSystem", "Caption")?.Cast<ManagementObject>().FirstOrDefault()?["Caption"]?.ToString().Trim() ?? "N/A";
+        public static string GetOSVersion()
+        {
+            return ExecuteWmiQuery("Win32_OperatingSystem", "Caption", (collection) =>
+            {
+                foreach (var item in collection)
+                {
+                    using (item)
+                    {
+                        return item["Caption"]?.ToString().Trim();
+                    }
+                }
+                return "N/A";
+            }) ?? "N/A";
+        }
+
         public static string GetMachineName() => Environment.MachineName;
         public static string GetLocale() => CultureInfo.CurrentUICulture.Name;
         public static string GetTimeZoneId() => TimeZoneInfo.Local.Id;
@@ -484,14 +527,7 @@ namespace ITM_Agent.Services
             return (fallbackIp, fallbackMac);
         }
 
-        public static string GetIpAddress()
-        {
-            return GetPrimaryNetworkInfo().IpAddress;
-        }
-
-        public static string GetMacAddress()
-        {
-            return GetPrimaryNetworkInfo().MacAddress;
-        }
+        public static string GetIpAddress() => GetPrimaryNetworkInfo().IpAddress;
+        public static string GetMacAddress() => GetPrimaryNetworkInfo().MacAddress;
     }
 }
