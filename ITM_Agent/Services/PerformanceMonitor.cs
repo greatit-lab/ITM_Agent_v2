@@ -264,7 +264,7 @@ namespace ITM_Agent.Services
             }
         }
 
-        // ▼▼▼ [수정] Start() 메서드에 computer.Open() 추가 (재시작 시 센서 활성화) ▼▼▼
+        // [수정] Start() 메서드에 computer.Open() 추가 (재시작 시 센서 활성화)
         public void Start()
         {
             if (_isInitialized)
@@ -288,7 +288,6 @@ namespace ITM_Agent.Services
                 logManager.LogEvent("[HardwareSampler] Skipping Start() because initial hardware monitor load failed.");
             }
         }
-        // ▲▲▲ 수정 끝 ▲▲▲
 
         public void Stop()
         {
