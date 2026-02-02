@@ -519,8 +519,13 @@ namespace ITM_Agent.ucPanel
                 }
             }
 
-            logManager.LogError($"[ucOverrideNamesPanel] 파일이 사용 중이어서 처리할 수 없습니다.\n파일: {filePath}");
+            // ▼▼▼ [수정] 파일 잠김을 Error가 아닌 Debug 로그로 처리하여 불필요한 알림 제거 ▼▼▼
+            if (settingsManager.IsDebugMode)
+            {
+                logManager.LogDebug($"[ucOverrideNamesPanel] 파일이 사용 중이어서 처리할 수 없습니다(Skipped). 파일: {filePath}");
+            }
             return null;
+            // ▲▲▲ 수정 끝 ▲▲▲
         }
 
         #endregion
