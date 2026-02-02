@@ -128,7 +128,7 @@ namespace ITM_Agent.Services
                                 {
                                     // 엔트리 생성
                                     var entry = archive.CreateEntry(fileName);
-                                    
+
                                     // 원본 파일 스트림 -> 압축 엔트리 스트림 복사
                                     using (var entryStream = entry.Open())
                                     using (var sourceStream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
