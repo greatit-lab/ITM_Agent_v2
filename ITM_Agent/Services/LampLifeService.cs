@@ -49,32 +49,44 @@ namespace ITM_Agent.Services
             PROCESS_NAME = Environment.Is64BitOperatingSystem ? "Main64" : "Main";
         }
 
-        public void Start()
+        // [수정] skipUiAutomation 파라미터 추가 (기본값 false)
+        // MainForm의 'Run' 버튼 클릭 시: Start(false) -> UI 수행
+        // MainForm의 '자동 복구' 시: Start(true) -> UI 건너뜀
+        public void Start(bool skipUiAutomation = false)
         {
             lock (_lock)
             {
                 if (_isRunning || !_settingsManager.IsLampLifeCollectorEnabled) return;
 
                 _isRunning = true;
-                _logManager.LogEvent("[LampLifeService] Service Started.");
+                _logManager.LogEvent($"[LampLifeService] Service Started. (SkipUI: {skipUiAutomation})");
 
                 MigrateDatabaseSchema();
 
                 Task.Run(async () =>
                 {
-                    // [Step 1] UI Automation 1회 실행
-                    _logManager.LogEvent("[LampLifeService] Executing Initial UI Automation...");
-                    bool uiSuccess = await ExecuteUiCollectionAsync();
-
-                    // [Step 2] MSSQL 접속 및 매핑
-                    if (uiSuccess)
+                    // [Step 1] UI Automation (조건부 실행)
+                    bool uiSuccess = false;
+                    if (!skipUiAutomation)
                     {
-                        _logManager.LogEvent("[LampLifeService] UI Collection done. Starting MSSQL Mapping...");
-                        await SyncWithEquipmentDatabaseAsync(true);
+                        _logManager.LogEvent("[LampLifeService] Executing Initial UI Automation...");
+                        uiSuccess = await ExecuteUiCollectionAsync();
                     }
                     else
                     {
-                        _logManager.LogError("[LampLifeService] Initial UI Collection failed. Skipping MSSQL mapping.");
+                        _logManager.LogEvent("[LampLifeService] Skipping UI Automation (Auto-Recovery Mode).");
+                    }
+
+                    // [Step 2] MSSQL 접속 및 매핑
+                    // UI 수행 성공했거나, 스킵 모드일 때도 MSSQL 동기화는 시도 (기존 데이터 매핑 유지)
+                    if (uiSuccess || skipUiAutomation)
+                    {
+                        // 스킵 모드일 때는 isInitialMapping=false로 하여 단순 업데이트만 수행하거나
+                        // 필요에 따라 true로 유지. 여기서는 안전하게 false(주기적 모드)로 진입 권장
+                        bool isInitial = uiSuccess; 
+                        
+                        _logManager.LogEvent("[LampLifeService] Connecting to MSSQL for Sync...");
+                        await SyncWithEquipmentDatabaseAsync(isInitial);
                     }
 
                     // [Step 3] 주기적 MSSQL 폴링 시작
