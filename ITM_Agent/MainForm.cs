@@ -171,7 +171,7 @@ namespace ITM_Agent
                 if (ts_Status.Text != "Running (Recovered)")
                 {
                     UpdateMainStatus("Running (Recovered)", Color.Blue);
-                    
+
                     // 1. 파일 감시 재개
                     fileWatcherManager?.ResumeWatching();
                     ucUploadPanel?.ResumeWatching();
@@ -186,7 +186,7 @@ namespace ITM_Agent
                 if (!statusStrip1.Text.StartsWith("Holding"))
                 {
                     UpdateMainStatus("Holding (Unstable Connection)", Color.Red);
-                    
+
                     // 1. 파일 감시 일시 정지
                     fileWatcherManager?.PauseWatching();
                     ucUploadPanel?.PauseWatching();
