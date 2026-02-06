@@ -138,39 +138,59 @@ namespace ITM_Agent
                 return;
             }
 
-            logManager.LogEvent($"[MainForm] Server Status Handling: {message}");
+            logManager.LogEvent($"[MainForm] Server Status Update: DB={isDbOk}, API={isFtpOk} ({message})");
 
             // ucOptionPanel의 상태 표시등 즉시 동기화
             ucOptionPanel?.SetDirectConnectionStatus(isDbOk, isFtpOk);
 
-            if (isConnected)
+            // ─────────────────────────────────────────────────────────────
+            // [개선 1] DB 의존 기능 독립 제어 (성능 정보, 램프 수명)
+            // ─────────────────────────────────────────────────────────────
+            if (isDbOk)
             {
-                // [복구] -> Auto-Scan 등 재개
-                UpdateMainStatus("Running (Recovered)", Color.Blue);
-
-                // 1. 파일 감시 재개
-                fileWatcherManager?.ResumeWatching();
-                ucUploadPanel?.ResumeWatching(); // [추가] Upload 패널 감시 재개
-
-                // 2. 램프/성능 수집 재개
-                lampLifeService?.Start();
+                // DB가 정상이면 성능 데이터 수집 즉시 재개 (API 상태 무관)
                 PerformanceDbWriter.Start(lb_eqpid.Text, eqpidManager);
 
-                // 3. 누락분 처리 (Slow Recovery) - 별도 Task로 실행
-                Task.Run(() => fileWatcherManager?.StartRecoveryScan());
+                // 램프 서비스 재개 (자동 복구 시 UI 자동화는 건너뜀)
+                lampLifeService?.Start(true);
             }
             else
             {
-                // [장애] -> 모든 기능 Holding
-                UpdateMainStatus("Holding (Server Lost)", Color.Red);
-
-                // 1. 파일 감시 일시 정지
-                fileWatcherManager?.PauseWatching();
-                ucUploadPanel?.PauseWatching(); // [추가] Upload 패널 감시 일시 정지
-
-                // 2. 램프/성능 수집 중지
-                lampLifeService?.Stop();
+                // DB가 끊겼을 때만 중단
                 PerformanceDbWriter.Stop();
+                lampLifeService?.Stop();
+            }
+
+            // ─────────────────────────────────────────────────────────────
+            // [개선 2] 파일 업로드 의존 기능 (파일 감시, API 필요)
+            // ─────────────────────────────────────────────────────────────
+            // 파일 업로드는 DB와 API가 모두 살아야 의미가 있음 (기존 isConnected 유지)
+            if (isConnected)
+            {
+                // 상태 메시지가 이미 Running인 경우 중복 갱신 방지
+                if (ts_Status.Text != "Running (Recovered)")
+                {
+                    UpdateMainStatus("Running (Recovered)", Color.Blue);
+                    
+                    // 1. 파일 감시 재개
+                    fileWatcherManager?.ResumeWatching();
+                    ucUploadPanel?.ResumeWatching();
+
+                    // 2. 누락 파일 복구 스캔 (비동기) - Slow Recovery
+                    Task.Run(() => fileWatcherManager?.StartRecoveryScan());
+                }
+            }
+            else
+            {
+                // API나 DB 중 하나라도 안 되면 파일 처리는 보류
+                if (!statusStrip1.Text.StartsWith("Holding"))
+                {
+                    UpdateMainStatus("Holding (Unstable Connection)", Color.Red);
+                    
+                    // 1. 파일 감시 일시 정지
+                    fileWatcherManager?.PauseWatching();
+                    ucUploadPanel?.PauseWatching();
+                }
             }
         }
 
@@ -419,7 +439,9 @@ namespace ITM_Agent
                 ucUploadPanel?.UpdateStatusOnRun(true);
 
                 PerformanceDbWriter.Start(lb_eqpid.Text, this.eqpidManager);
-                lampLifeService.Start();
+
+                // [수정] 수동 실행 시에는 UI 자동화를 수행함 (false)
+                lampLifeService.Start(false);
 
                 // 서버 모니터링 시작
                 serverConnectionManager.Start();
