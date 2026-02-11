@@ -392,7 +392,7 @@ namespace ITM_Agent.Services
                 {
                     _consecutiveFailures++;
                     string failureDetails = $"Invalid sample detected (CPU: {cpuUsage:F2}, Mem: {memUsage:F2}). Failures: {_consecutiveFailures}";
-                    
+
                     if (LogManager.GlobalDebugEnabled)
                         logManager.LogDebug($"[HardwareSampler] {failureDetails}");
 
@@ -404,7 +404,7 @@ namespace ITM_Agent.Services
                             computer.Close();
                             computer.Open();
                             _consecutiveFailures = 0;
-                            _sensorInfoLogged = false; 
+                            _sensorInfoLogged = false;
                             logManager.LogEvent("[HardwareSampler] Hardware monitor re-initialized.");
                         }
                         catch (Exception ex)
@@ -468,6 +468,6 @@ namespace ITM_Agent.Services
                     logManager.LogError($"[HardwareSampler] Failed to sample: {ex.Message}");
                 }
             }
-        } 
-    } 
+        }
+    }
 }
