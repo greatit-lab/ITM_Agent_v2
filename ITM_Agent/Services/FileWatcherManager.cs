@@ -18,9 +18,11 @@ namespace ITM_Agent.Services
         private readonly TimeSpan duplicateEventThreshold = TimeSpan.FromSeconds(5);
 
         private bool isRunning = false;
-        private bool isPaused = false; // [신규] 서버 끊김으로 인한 일시정지 상태
+        private bool isPaused = false; 
 
-        // 안정화 감지용
+        // [핵심 개선] 제외 폴더 캐싱 (성능 및 정확성 향상)
+        private readonly List<string> _cachedExcludeFolders = new List<string>();
+
         private readonly Dictionary<string, FileTrackingInfo> trackedFiles = new Dictionary<string, FileTrackingInfo>(StringComparer.OrdinalIgnoreCase);
         private System.Threading.Timer stabilityCheckTimer;
         private readonly object trackingLock = new object();
@@ -35,7 +37,6 @@ namespace ITM_Agent.Services
             public WatcherChangeTypes LastChangeType { get; set; }
         }
 
-        // 복구 작업 락
         private readonly object recoveryLock = new object();
 
         public FileWatcherManager(SettingsManager settingsManager, LogManager logManager, bool isDebugMode)
@@ -51,7 +52,6 @@ namespace ITM_Agent.Services
             logManager.LogEvent($"[FileWatcherManager] Debug mode updated to: {isDebug}");
         }
 
-        // [신규] 서버 끊김 시 호출: 이벤트 발생을 원천 차단
         public void PauseWatching()
         {
             if (!isRunning) return;
@@ -63,7 +63,6 @@ namespace ITM_Agent.Services
             logManager.LogEvent("[FileWatcherManager] Paused watching (Server Holding).");
         }
 
-        // [신규] 서버 복구 시 호출: 이벤트 발생 재개
         public void ResumeWatching()
         {
             if (!isRunning) return;
@@ -78,6 +77,21 @@ namespace ITM_Agent.Services
         public void InitializeWatchers()
         {
             StopWatchers();
+
+            // [핵심 개선] 감시 시작 시 제외 폴더(ExcludeFolders) 목록을 캐싱 및 정규화
+            _cachedExcludeFolders.Clear();
+            var excludes = settingsManager.GetFoldersFromSection("[ExcludeFolders]");
+            foreach (var ex in excludes)
+            {
+                try
+                {
+                    // 디렉토리 구분자를 확실히 추가하여 "C:\Target\Exclude"와 "C:\Target\ExcludeABC"가 오작동하지 않도록 방지
+                    string norm = Path.GetFullPath(ex).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    _cachedExcludeFolders.Add(norm);
+                }
+                catch { }
+            }
+
             var targetFolders = settingsManager.GetFoldersFromSection("[TargetFolders]");
             if (targetFolders.Count == 0)
             {
@@ -99,7 +113,7 @@ namespace ITM_Agent.Services
                     {
                         IncludeSubdirectories = true,
                         NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
-                        InternalBufferSize = 131072 // 128KB
+                        InternalBufferSize = 131072 
                     };
 
                     watcher.Created += OnFileChanged;
@@ -116,7 +130,7 @@ namespace ITM_Agent.Services
                     logManager.LogError($"[FileWatcherManager] Failed to create watcher for {folder}. Error: {ex.Message}");
                 }
             }
-            logManager.LogEvent($"[FileWatcherManager] {watchers.Count} watcher(s) initialized.");
+            logManager.LogEvent($"[FileWatcherManager] {watchers.Count} watcher(s) initialized. Exclude folders count: {_cachedExcludeFolders.Count}");
         }
 
         public void StartWatching()
@@ -164,33 +178,36 @@ namespace ITM_Agent.Services
             logManager.LogEvent("[FileWatcherManager] File monitoring stopped.");
         }
 
-        private void OnFileChanged(object sender, FileSystemEventArgs e)
+        // [추가] 파일이 제외 폴더 하위에 있는지 검사하는 최적화 메서드
+        private bool IsExcluded(string filePath)
         {
-            if (!isRunning || isPaused) return; // Paused 상태면 무시
-
-            var excludeFolders = settingsManager.GetFoldersFromSection("[ExcludeFolders]");
-            string changedFolderPath = null;
+            if (_cachedExcludeFolders.Count == 0) return false;
             try
             {
-                changedFolderPath = Path.GetDirectoryName(e.FullPath);
-                if (string.IsNullOrEmpty(changedFolderPath)) return;
-            }
-            catch { return; }
+                string currentFileDir = Path.GetDirectoryName(filePath);
+                if (string.IsNullOrEmpty(currentFileDir)) return false;
 
-            foreach (var excludeFolder in excludeFolders)
-            {
-                try
+                string normalizedCurrentDir = Path.GetFullPath(currentFileDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+                foreach (var exclude in _cachedExcludeFolders)
                 {
-                    string normalizedExclude = Path.GetFullPath(excludeFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                    string normalizedChanged = Path.GetFullPath(changedFolderPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-                    if (normalizedChanged.StartsWith(normalizedExclude, StringComparison.OrdinalIgnoreCase))
+                    // 디렉토리 경계가 정확히 일치하는 상위/하위 관계만 필터링
+                    if (normalizedCurrentDir.StartsWith(exclude, StringComparison.OrdinalIgnoreCase))
                     {
-                        return;
+                        return true;
                     }
                 }
-                catch { return; }
             }
+            catch { }
+            return false;
+        }
+
+        private void OnFileChanged(object sender, FileSystemEventArgs e)
+        {
+            if (!isRunning || isPaused) return; 
+
+            // [핵심 개선] 매 이벤트마다 INI를 읽지 않고 캐시된 리스트를 사용하여 경로 엄격 비교
+            if (IsExcluded(e.FullPath)) return;
 
             if (IsDuplicateEvent(e.FullPath)) return;
 
@@ -310,16 +327,14 @@ namespace ITM_Agent.Services
             }
         }
 
-        // [신규/개선] 복구 스캔 (Slow Recovery Mode)
         public void StartRecoveryScan()
         {
-            if (!Monitor.TryEnter(recoveryLock)) return; // 이미 실행 중이면 스킵
+            if (!Monitor.TryEnter(recoveryLock)) return; 
 
             Task.Run(() =>
             {
                 try
                 {
-                    // ★ 스레드 우선순위 낮춤 (장비 부하 최소화)
                     Thread.CurrentThread.Priority = ThreadPriority.Lowest;
 
                     logManager.LogEvent("[Recovery] Starting Slow Recovery Scan...");
@@ -327,42 +342,19 @@ namespace ITM_Agent.Services
                     var targetFolders = settingsManager.GetFoldersFromSection("[TargetFolders]");
                     int totalProcessed = 0;
 
-                    // 제외 폴더 목록 준비
-                    var excludeFolders = settingsManager.GetFoldersFromSection("[ExcludeFolders]")
-                        .Select(p =>
-                        {
-                            try { return Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
-                            catch { return null; }
-                        })
-                        .Where(p => p != null)
-                        .ToList();
-
                     foreach (var folder in targetFolders)
                     {
                         if (!Directory.Exists(folder) || isPaused) continue;
 
-                        // 하위 폴더까지 검색
                         foreach (string filePath in Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories))
                         {
-                            if (isPaused) break; // 실행 중 서버 끊기면 즉시 중단
+                            if (isPaused) break; 
 
-                            // 제외 폴더 체크
-                            try
-                            {
-                                string currentFileDir = Path.GetDirectoryName(filePath);
-                                if (string.IsNullOrEmpty(currentFileDir)) continue;
-                                string normalizedCurrentDir = Path.GetFullPath(currentFileDir)
-                                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                            // [핵심 개선] 통합된 캐시 기반 제외 폴더 검사 사용
+                            if (IsExcluded(filePath)) continue;
 
-                                if (excludeFolders.Any(ex => normalizedCurrentDir.StartsWith(ex, StringComparison.OrdinalIgnoreCase)))
-                                    continue;
-                            }
-                            catch { continue; }
-
-                            // 중복 체크
                             if (IsDuplicateEvent(filePath)) continue;
 
-                            // 파일 처리 시도 (IsFileReady 체크 포함)
                             if (IsFileReady(filePath))
                             {
                                 try
@@ -371,10 +363,8 @@ namespace ITM_Agent.Services
                                     if (result != null)
                                     {
                                         totalProcessed++;
-                                        // ★ Throttling: 파일 하나당 200ms 휴식
                                         Thread.Sleep(200);
 
-                                        // 처리된 파일 기록
                                         lock (fileProcessTracker)
                                         {
                                             fileProcessTracker[filePath] = DateTime.UtcNow;
@@ -382,7 +372,6 @@ namespace ITM_Agent.Services
                                     }
                                     else
                                     {
-                                        // 실패했거나 대상 아님 -> 약간의 텀 (CPU 양보)
                                         Thread.Sleep(10);
                                     }
                                 }
@@ -451,7 +440,7 @@ namespace ITM_Agent.Services
             {
                 try
                 {
-                    using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     {
                         using (var destStream = new FileStream(destPath, overwrite ? FileMode.Create : FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite))
                         {
@@ -504,7 +493,7 @@ namespace ITM_Agent.Services
             if (!File.Exists(filePath)) return false;
             try
             {
-                using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 {
                     return true;
                 }
@@ -539,11 +528,6 @@ namespace ITM_Agent.Services
                     StartRecoveryScan();
                 }
             }
-        }
-
-        private void ManuallyScanAndProcessFolder(string folderPath)
-        {
-            // 이 메서드는 이제 StartRecoveryScan으로 대체됩니다.
         }
     }
 }
