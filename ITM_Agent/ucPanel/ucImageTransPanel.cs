@@ -334,7 +334,7 @@ namespace ITM_Agent.ucPanel
             if (!m0.Success) return;
 
             string baseName = m0.Groups["base"].Value;
-            
+
             // [개선] 파일명에 포함된 '.' 및 '#' 기호를 언더바('_')로 치환하여 웹 환경(URL) 호환성 확보
             string safeBaseName = baseName.Replace('.', '_').Replace('#', '_');
 
