@@ -18,7 +18,7 @@ namespace ITM_Agent.Services
         private readonly TimeSpan duplicateEventThreshold = TimeSpan.FromSeconds(5);
 
         private bool isRunning = false;
-        private bool isPaused = false; 
+        private bool isPaused = false;
 
         // [핵심 개선] 제외 폴더 캐싱 (성능 및 정확성 향상)
         private readonly List<string> _cachedExcludeFolders = new List<string>();
@@ -113,7 +113,7 @@ namespace ITM_Agent.Services
                     {
                         IncludeSubdirectories = true,
                         NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
-                        InternalBufferSize = 131072 
+                        InternalBufferSize = 131072
                     };
 
                     watcher.Created += OnFileChanged;
@@ -204,7 +204,7 @@ namespace ITM_Agent.Services
 
         private void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            if (!isRunning || isPaused) return; 
+            if (!isRunning || isPaused) return;
 
             // [핵심 개선] 매 이벤트마다 INI를 읽지 않고 캐시된 리스트를 사용하여 경로 엄격 비교
             if (IsExcluded(e.FullPath)) return;
@@ -329,7 +329,7 @@ namespace ITM_Agent.Services
 
         public void StartRecoveryScan()
         {
-            if (!Monitor.TryEnter(recoveryLock)) return; 
+            if (!Monitor.TryEnter(recoveryLock)) return;
 
             Task.Run(() =>
             {
@@ -348,7 +348,7 @@ namespace ITM_Agent.Services
 
                         foreach (string filePath in Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories))
                         {
-                            if (isPaused) break; 
+                            if (isPaused) break;
 
                             // [핵심 개선] 통합된 캐시 기반 제외 폴더 검사 사용
                             if (IsExcluded(filePath)) continue;
