@@ -305,8 +305,8 @@ namespace ITM_Agent.ucPanel
             if (!isRunning) return;
 
             isPaused = false;
-            StopWatchers();      
-            InitializeWatchers(); 
+            StopWatchers();
+            InitializeWatchers();
 
             _logManager.LogEvent("[ucUploadPanel] Watchers Resumed.");
         }
@@ -437,7 +437,7 @@ namespace ITM_Agent.ucPanel
                 try
                 {
                     if (!File.Exists(filePath)) return false;
-                    
+
                     // [핵심 개선] FileShare.None(독점 잠금) -> FileShare.ReadWrite | FileShare.Delete
                     using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     {
