@@ -319,7 +319,7 @@ namespace ITM_Agent.Services
                         if (hardware == null) continue; // 방어 코드
                         hardware.Update();
                         sensorInfo.AppendLine($"  Hardware: {hardware.Name} ({hardware.HardwareType})");
-                        
+
                         if (hardware.Sensors != null)
                         {
                             foreach (var sensor in hardware.Sensors)
@@ -336,7 +336,7 @@ namespace ITM_Agent.Services
                                 if (subHardware == null) continue;
                                 subHardware.Update();
                                 sensorInfo.AppendLine($"    SubHardware: {subHardware.Name} ({subHardware.HardwareType})");
-                                
+
                                 if (subHardware.Sensors != null)
                                 {
                                     foreach (var sensor in subHardware.Sensors)
@@ -357,7 +357,7 @@ namespace ITM_Agent.Services
                     {
                         if (hardware == null) continue;
                         hardware.Update();
-                        
+
                         if (hardware.SubHardware != null)
                         {
                             foreach (var subHardware in hardware.SubHardware)
