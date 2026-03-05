@@ -702,8 +702,8 @@ namespace ITM_Agent.ucPanel
             }
 
             var baselineData = new Dictionary<string, (string, string, string)>();
-            // [개선] C\d+W\d+ 로 수정하여 두자리수 슬롯 완벽 지원 (C10W22 등)
-            var regex = new Regex(@"(\d{8}_\d{6})_(.+?)_(C\d+W\d+)", RegexOptions.IgnoreCase);
+            // C\dW\d+ 로 수정하여 두자리수 슬롯 완벽 지원 (C1W22 등)
+            var regex = new Regex(@"(\d{8}_\d{6})_(.+?)_(C\dW\d+)", RegexOptions.IgnoreCase);
 
             foreach (var file in files)
             {
