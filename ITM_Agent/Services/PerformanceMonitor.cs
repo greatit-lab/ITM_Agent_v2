@@ -420,6 +420,7 @@ namespace ITM_Agent.Services
                               gpu.Sensors.FirstOrDefault(s => s != null && s.SensorType == SensorType.Temperature)?.Value ?? 0;
                 }
 
+                // 안전한 모든 센서 추출 LINQ 구문 적용
                 var allSensors = computer.Hardware
                     .Where(h => h != null)
                     .SelectMany(h =>
@@ -438,6 +439,7 @@ namespace ITM_Agent.Services
                 bool hasCpuError = cpuUsage == 0;
                 bool hasMemError = memUsage == 0;
 
+                // CPU와 메모리가 둘 다 0일 때만 심각한 오류로 판단
                 if (hasCpuError && hasMemError)
                 {
                     _consecutiveFailures++;
@@ -464,10 +466,11 @@ namespace ITM_Agent.Services
                             _isInitialized = false;
                         }
                     }
-                    return; 
+                    return; // 정말 아무것도 못 읽었을 때만 리턴
                 }
                 _consecutiveFailures = 0;
 
+                // --- Top 5 프로세스 정보 수집 ---
                 // --- [최적화] 무거운 LINQ 정렬 구문을 C# 네이티브 List 기반으로 교체하여 메모리 가비지(Allocation) 최소화 ---
                 var topProcesses = new List<ProcessMetric>(5);
                 try
@@ -476,7 +479,7 @@ namespace ITM_Agent.Services
                     try
                     {
                         var procInfos = new List<(string Name, long PrivateMem, long WorkingSet)>(allProcesses.Length);
-                        
+
                         foreach (var p in allProcesses)
                         {
                             try
@@ -496,10 +499,11 @@ namespace ITM_Agent.Services
                             long workingMB = procInfos[i].WorkingSet / (1024 * 1024);
                             long sharedMB = workingMB > privateMB ? workingMB - privateMB : 0;
                             
-                            topProcesses.Add(new ProcessMetric { 
-                                ProcessName = procInfos[i].Name, 
-                                MemoryUsageMB = privateMB, 
-                                SharedMemoryUsageMB = sharedMB 
+                            topProcesses.Add(new ProcessMetric
+                            {
+                                ProcessName = procInfos[i].Name,
+                                MemoryUsageMB = privateMB,
+                                SharedMemoryUsageMB = sharedMB
                             });
                         }
                     }
