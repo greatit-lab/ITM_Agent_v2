@@ -498,7 +498,7 @@ namespace ITM_Agent.Services
                             long privateMB = procInfos[i].PrivateMem / (1024 * 1024);
                             long workingMB = procInfos[i].WorkingSet / (1024 * 1024);
                             long sharedMB = workingMB > privateMB ? workingMB - privateMB : 0;
-                            
+
                             topProcesses.Add(new ProcessMetric
                             {
                                 ProcessName = procInfos[i].Name,
