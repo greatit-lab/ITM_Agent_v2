@@ -466,7 +466,7 @@ namespace ITM_Agent.Services
                             _isInitialized = false;
                         }
                     }
-                    return; 
+                    return;
                 }
                 _consecutiveFailures = 0;
 
@@ -497,7 +497,7 @@ namespace ITM_Agent.Services
                             long commitMB = procInfos[i].PrivateMem / (1024 * 1024); // 기존에 수집하던 커밋 크기
                             long workingMB = procInfos[i].WorkingSet / (1024 * 1024);
                             long sharedMB = workingMB > commitMB ? workingMB - commitMB : 0;
-                            
+
                             long privateWorkingSetMB = 0;
                             try
                             {
@@ -510,7 +510,7 @@ namespace ITM_Agent.Services
                             catch
                             {
                                 // 프로세스 종료 등 예외 발생 시 안전을 위해 기본 WorkingSet으로 대체
-                                privateWorkingSetMB = workingMB; 
+                                privateWorkingSetMB = workingMB;
                             }
 
                             topProcesses.Add(new ProcessMetric
