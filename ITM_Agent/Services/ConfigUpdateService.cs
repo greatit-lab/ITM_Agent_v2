@@ -74,7 +74,7 @@ namespace ITM_Agent.Services
                         ALTER TABLE public.cfg_server ADD COLUMN proxy_ip VARCHAR(50);
                     END IF;
                 END $$;";
-            
+
             try
             {
                 using (var cmd = new NpgsqlCommand(schemaSql, conn))
@@ -226,7 +226,7 @@ namespace ITM_Agent.Services
                     Host = newDbHost,
                     Port = newDbPort,
                     Username = newDbUser,
-                    Password = newDbPw, 
+                    Password = newDbPw,
                     Database = dbName,
                     Encoding = "UTF8",
                     SslMode = SslMode.Disable,
@@ -239,7 +239,7 @@ namespace ITM_Agent.Services
                     Host = newFtpHost,
                     Port = newFtpPort,
                     Username = newFtpUser,
-                    Password = newFtpPw 
+                    Password = newFtpPw
                 };
                 string ftpConfigString = JsonConvert.SerializeObject(ftpConfig);
 
@@ -287,7 +287,7 @@ namespace ITM_Agent.Services
             {
                 // (8) (신)DB에 접속
                 string newCs = DatabaseInfo.CreateDefault().GetConnectionString();
-                
+
                 // 업데이트 후, 바뀐 Connection.ini에서 원본 IP 다시 추출
                 string newDbHost = GetOriginalDbHost();
                 string newFtpHost = GetOriginalFtpHost();
