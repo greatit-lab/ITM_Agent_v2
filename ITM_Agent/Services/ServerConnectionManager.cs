@@ -1,6 +1,6 @@
 // ITM_Agent/Services/ServerConnectionManager.cs
 using System;
-using System.Net.Http; // [추가] HttpClient 사용
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using ConnectInfo; // DatabaseInfo, FtpsInfo
@@ -9,7 +9,7 @@ using Npgsql;
 namespace ITM_Agent.Services
 {
     /// <summary>
-    /// [수정] 서버(DB, Object Storage API) 연결 상태를 10초 주기로 정밀 감시합니다.
+    /// 서버(DB, Object Storage API) 연결 상태를 10초 주기로 정밀 감시합니다.
     /// DB는 실제 쿼리, Object Storage는 HTTP Health Check를 통해 생존 여부를 확인합니다.
     /// </summary>
     public class ServerConnectionManager : IDisposable
@@ -22,7 +22,7 @@ namespace ITM_Agent.Services
         private readonly object _lock = new object();
         private readonly Random _random = new Random();
 
-        // [추가] HTTP 통신을 위한 클라이언트 (재사용 권장)
+        // HTTP 통신을 위한 클라이언트 (재사용 권장)
         private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
 
         // 현재 상태
@@ -109,6 +109,12 @@ namespace ITM_Agent.Services
 
         private async Task<bool> CheckDatabaseAsync()
         {
+            // ⭐️ [핵심 추가] 프록시 모드(내부망)일 경우, 연결 끊김 검사를 무시하고 무조건 초록불(true)로 강제 통과
+            if (DatabaseInfo.GetSettingsIniValue("Network", "UseProxy") == "1")
+            {
+                return true;
+            }
+
             try
             {
                 string cs = DatabaseInfo.CreateDefault().GetConnectionString();
@@ -138,9 +144,14 @@ namespace ITM_Agent.Services
             }
         }
 
-        // [변경] FTP 포트 체크 대신 HTTP API Health Check 수행
         private async Task<bool> CheckObjectStorageApiAsync()
         {
+            // ⭐️ [핵심 추가] 프록시 모드(내부망)일 경우, 연결 끊김 검사를 무시하고 무조건 초록불(true)로 강제 통과
+            if (DatabaseInfo.GetSettingsIniValue("Network", "UseProxy") == "1")
+            {
+                return true;
+            }
+
             try
             {
                 // Connection.ini의 [Ftps] 섹션에서 IP만 가져옴 (포트는 API_PORT 사용)
