@@ -347,7 +347,7 @@ namespace ITM_Agent.ucPanel
             {
                 var ftpInfo = FtpsInfo.CreateDefault();
                 host = ftpInfo.Host;
-                int port = ftpInfo.Port; 
+                int port = ftpInfo.Port;
 
                 if (string.IsNullOrEmpty(host)) throw new Exception("API Host not configured.");
 
