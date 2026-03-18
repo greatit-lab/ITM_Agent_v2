@@ -119,7 +119,7 @@ namespace ITM_Agent.Services
                 _mainForm.ShowTemporarilyForAutomation();
                 await Task.Delay(500);
 
-                // [수정] Application 객체도 IDisposable이므로 using으로 감싸 핸들 누수 방지
+                // Application 객체도 IDisposable이므로 using으로 감싸 핸들 누수 방지
                 using (var app = FlaUI.Core.Application.Attach(PROCESS_NAME))
                 using (var automation = new UIA3Automation())
                 {
@@ -216,7 +216,7 @@ namespace ITM_Agent.Services
                         {
                             try
                             {
-                                // ▼▼▼ [수정] 안전한 형변환 (Convert 사용) ▼▼▼
+                                // 안전한 형변환 (Convert 사용)
                                 // DB 컬럼이 tinyint, smallint, bigint 무엇이든 int로 변환
                                 // DB 컬럼이 datetime, datetime2, smalldatetime 무엇이든 DateTime으로 변환
                                 if (reader["LogTime"] != DBNull.Value && reader["LampID"] != DBNull.Value)
@@ -258,7 +258,8 @@ namespace ITM_Agent.Services
                 await pgConn.OpenAsync();
                 string eqpid = _settingsManager.GetEqpid();
 
-                var currentData = new List<(string LampName, int? LampNo, DateTime LastChanged)>();
+                // [수정] Nullable DateTime으로 변경
+                var currentData = new List<(string LampName, int? LampNo, DateTime? LastChanged)>();
                 using (var cmd = new NpgsqlCommand("SELECT lamp_name, lamp_no, last_changed FROM public.eqp_lamp_life WHERE eqpid = @eqpid", pgConn))
                 {
                     cmd.Parameters.AddWithValue("@eqpid", eqpid);
@@ -266,7 +267,12 @@ namespace ITM_Agent.Services
                     {
                         while (await reader.ReadAsync())
                         {
-                            currentData.Add((reader.GetString(0), reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1), reader.GetDateTime(2)));
+                            // [수정] IsDBNull 체크를 추가하여 Null일 경우 안전하게 null 반환
+                            currentData.Add((
+                                reader.GetString(0), 
+                                reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1), 
+                                reader.IsDBNull(2) ? (DateTime?)null : reader.GetDateTime(2)
+                            ));
                         }
                     }
                 }
@@ -275,7 +281,8 @@ namespace ITM_Agent.Services
                 {
                     if (isMappingMode)
                     {
-                        var match = mssqlLogs.FirstOrDefault(m => Math.Abs((m.LogTime - pgRow.LastChanged).TotalSeconds) < 2);
+                        // [수정] .HasValue 체크 및 .Value 접근
+                        var match = mssqlLogs.FirstOrDefault(m => pgRow.LastChanged.HasValue && Math.Abs((m.LogTime - pgRow.LastChanged.Value).TotalSeconds) < 2);
                         if (match.LampID > 0)
                         {
                             using (var updateCmd = new NpgsqlCommand("UPDATE public.eqp_lamp_life SET lamp_no = @no WHERE eqpid = @eqpid AND lamp_name = @name", pgConn))
@@ -293,7 +300,9 @@ namespace ITM_Agent.Services
                         if (pgRow.LampNo.HasValue)
                         {
                             var latestLog = mssqlLogs.Where(m => m.LampID == pgRow.LampNo.Value).OrderByDescending(m => m.LogTime).FirstOrDefault();
-                            if (latestLog.LampID > 0 && latestLog.LogTime > pgRow.LastChanged)
+                            
+                            // [수정] Null이거나(아직 교체안됨) 새로운 로그의 시간이 더 최근일 경우
+                            if (latestLog.LampID > 0 && (!pgRow.LastChanged.HasValue || latestLog.LogTime > pgRow.LastChanged.Value))
                             {
                                 int newAge = (int)(DateTime.Now - latestLog.LogTime).TotalHours;
                                 DateTime cleanLastChanged = TruncateToSeconds(latestLog.LogTime);
@@ -379,7 +388,7 @@ namespace ITM_Agent.Services
                 return null;
             }
 
-            // [수정] 호스트 이름 '.' (로컬) 사용
+            // 호스트 이름 '.' (로컬) 사용
             string dataSource = $".\\{foundInstance}";
             return $"Data Source={dataSource};Initial Catalog=N2000_MEASURE;Integrated Security=True;TrustServerCertificate=True;";
         }
