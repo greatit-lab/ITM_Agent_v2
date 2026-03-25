@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -27,7 +28,7 @@ namespace ITM_Agent.ucPanel
         private readonly object _lockTab1 = new object();
         private readonly object _lockTab2 = new object();
 
-        // ⭐️ [핵심 추가] 이벤트 누락 방지 및 Lock 폭풍 차단을 위한 파일별 슬라이딩 윈도우 타이머
+        // 파일별 슬라이딩 윈도우 타이머
         private readonly ConcurrentDictionary<string, System.Threading.Timer> _tab1Timers = new ConcurrentDictionary<string, System.Threading.Timer>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, System.Threading.Timer> _tab2Timers = new ConcurrentDictionary<string, System.Threading.Timer>(StringComparer.OrdinalIgnoreCase);
         private const int DebounceDelayMs = 1000; // 1초 대기
@@ -52,7 +53,6 @@ namespace ITM_Agent.ucPanel
             public bool RequiresThreeArgs { get; set; }
         }
 
-        // 파일 이벤트 상태 보관용 클래스
         private class FileEventState
         {
             public string FullPath { get; set; }
@@ -115,10 +115,7 @@ namespace ITM_Agent.ucPanel
         private string NormalizePath(string path)
         {
             if (string.IsNullOrEmpty(path)) return "";
-            try
-            {
-                return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
-            }
+            try { return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant(); }
             catch { return path.ToUpperInvariant(); }
         }
 
@@ -301,21 +298,17 @@ namespace ITM_Agent.ucPanel
         public void PauseWatching()
         {
             if (!isRunning) return;
-
             isPaused = true;
             StopWatchers();
-
             _logManager.LogEvent("[ucUploadPanel] Watchers Paused (Server Holding).");
         }
 
         public void ResumeWatching()
         {
             if (!isRunning) return;
-
             isPaused = false;
             StopWatchers();
             InitializeWatchers();
-
             _logManager.LogEvent("[ucUploadPanel] Watchers Resumed.");
         }
 
@@ -351,8 +344,7 @@ namespace ITM_Agent.ucPanel
                     string folder = row.Cells["WatchFolder"].Value?.ToString();
                     string plugin = row.Cells["PluginName"].Value?.ToString();
 
-                    if (string.IsNullOrEmpty(folder) || folder == "(폴더 선택)" ||
-                        string.IsNullOrEmpty(plugin) || plugin == "(플러그인 선택)") continue;
+                    if (string.IsNullOrEmpty(folder) || folder == "(폴더 선택)" || string.IsNullOrEmpty(plugin) || plugin == "(플러그인 선택)") continue;
 
                     foldersToWatch.Add(folder);
                     _tab1RuleMap[NormalizePath(folder)] = plugin;
@@ -373,9 +365,7 @@ namespace ITM_Agent.ucPanel
                         watcher.Created += OnTab1FileEvent;
                         watcher.Renamed += OnTab1FileEvent;
                         watcher.Changed += OnTab1FileEvent;
-
                         _tab1Watchers.Add(watcher);
-                        _logManager.LogEvent($"[ucUploadPanel] Tab1 Watcher started: {folder}");
                     }
                     catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Tab1 Watcher Failed: {ex.Message}"); }
                 }
@@ -391,12 +381,11 @@ namespace ITM_Agent.ucPanel
                     string filter = row.Cells["FileFilter"].Value?.ToString();
                     string plugin = row.Cells["PluginName"].Value?.ToString();
 
-                    if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(filter) ||
-                        string.IsNullOrEmpty(plugin) || plugin == "(플러그인 선택)") continue;
+                    if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(filter) || string.IsNullOrEmpty(plugin) || plugin == "(플러그인 선택)") continue;
 
                     try
                     {
-                        if (!Directory.Exists(folder)) { _logManager.LogEvent($"[ucUploadPanel] Tab2 Watcher skip (not found): {folder}"); continue; }
+                        if (!Directory.Exists(folder)) continue;
                         var watcher = new FileSystemWatcher(folder)
                         {
                             Filter = filter,
@@ -411,7 +400,6 @@ namespace ITM_Agent.ucPanel
 
                         string mapKey = $"{NormalizePath(folder)}|{filter.ToUpperInvariant()}";
                         _tab2RuleMap[mapKey] = plugin;
-                        _logManager.LogEvent($"[ucUploadPanel] Tab2 Watcher started: {folder}");
                     }
                     catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Tab2 Watcher Error: {ex.Message}"); }
                 }
@@ -422,19 +410,15 @@ namespace ITM_Agent.ucPanel
         {
             lock (_lockTab1)
             {
-                foreach (var w in _tab1Watchers) { w.EnableRaisingEvents = false; w.Created -= OnTab1FileEvent; w.Renamed -= OnTab1FileEvent; w.Changed -= OnTab1FileEvent; w.Dispose(); }
+                foreach (var w in _tab1Watchers) { w.EnableRaisingEvents = false; w.Dispose(); }
                 _tab1Watchers.Clear(); _tab1RuleMap.Clear();
-
-                // 타이머 정리
                 foreach (var t in _tab1Timers.Values) { try { t.Dispose(); } catch { } }
                 _tab1Timers.Clear();
             }
             lock (_lockTab2)
             {
-                foreach (var w in _tab2Watchers) { w.EnableRaisingEvents = false; w.Created -= OnTab2FileChanged; w.Renamed -= OnTab2FileChanged; w.Changed -= OnTab2FileChanged; w.Dispose(); }
+                foreach (var w in _tab2Watchers) { w.EnableRaisingEvents = false; w.Dispose(); }
                 _tab2Watchers.Clear(); _tab2RuleMap.Clear();
-
-                // 타이머 정리
                 foreach (var t in _tab2Timers.Values) { try { t.Dispose(); } catch { } }
                 _tab2Timers.Clear();
             }
@@ -453,32 +437,26 @@ namespace ITM_Agent.ucPanel
                 try
                 {
                     if (!File.Exists(filePath)) return false;
-
                     using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     {
                         if (stream.Length >= 0) return true;
                     }
                 }
                 catch (IOException) { }
-                catch (Exception ex)
-                {
-                    _logManager.LogError($"[WaitForFileReady] Error checking file {filePath}: {ex.Message}");
-                    return false;
-                }
+                catch (Exception) { return false; }
                 Thread.Sleep(500);
             }
-            _logManager.LogError($"[WaitForFileReady] Timeout waiting for file: {filePath}");
             return false;
         }
 
         private void OnTab1FileEvent(object sender, FileSystemEventArgs e)
         {
-            if (e.Name.Contains("_#1_") || isPaused) return;
+            // ⭐️ [핵심 방어] 파일명에 _#숫자_ 패턴이 포함되어 있으면 Override 처리가 우선이므로 메인 업로드 타이머를 가동하지 않습니다.
+            if (Regex.IsMatch(e.Name, @"_#\d+_") || isPaused) return;
 
             string fileKey = e.FullPath.ToUpperInvariant();
             var state = new FileEventState { FullPath = e.FullPath, Name = e.Name, ChangeType = e.ChangeType };
 
-            // 이벤트가 올 때마다 타이머를 1초로 리셋. 1초간 잠잠해지면 Tab1TimerCallback 실행
             _tab1Timers.AddOrUpdate(fileKey,
                 key => new System.Threading.Timer(Tab1TimerCallback, state, DebounceDelayMs, Timeout.Infinite),
                 (key, oldTimer) =>
@@ -494,30 +472,19 @@ namespace ITM_Agent.ucPanel
             var state = (FileEventState)stateObj;
             string fileKey = state.FullPath.ToUpperInvariant();
 
-            if (_tab1Timers.TryRemove(fileKey, out var timer))
-            {
-                timer.Dispose();
-            }
+            if (_tab1Timers.TryRemove(fileKey, out var timer)) timer.Dispose();
 
             Task.Run(() =>
             {
                 try
                 {
-                    if (!WaitForFileReady(state.FullPath, 60))
-                    {
-                        _logManager.LogEvent($"[Tab1] File locked or copy failed (timeout), skipping: {state.Name}");
-                        return;
-                    }
+                    if (!WaitForFileReady(state.FullPath, 60)) return;
 
                     string folder = NormalizePath(Path.GetDirectoryName(state.FullPath));
                     if (!_tab1RuleMap.TryGetValue(folder, out string pluginName))
                     {
                         var parent = NormalizePath(Directory.GetParent(state.FullPath)?.FullName);
-                        if (string.IsNullOrEmpty(parent) || !_tab1RuleMap.TryGetValue(parent, out pluginName))
-                        {
-                            if (_settingsManager.IsDebugMode) _logManager.LogDebug($"[Tab1] No rule for '{folder}' (File: {state.Name})");
-                            return;
-                        }
+                        if (string.IsNullOrEmpty(parent) || !_tab1RuleMap.TryGetValue(parent, out pluginName)) return;
                     }
 
                     _logManager.LogEvent($"[Tab1] Triggered: {state.Name} ({state.ChangeType}) -> Plugin: {pluginName}");
@@ -532,13 +499,13 @@ namespace ITM_Agent.ucPanel
 
         private void OnTab2FileChanged(object sender, FileSystemEventArgs e)
         {
-            if (e.Name.Contains("_#1_") || isPaused) return;
+            // ⭐️ [핵심 방어] 파일명에 _#숫자_ 패턴이 포함되어 있으면 무시하여 Override 로직과 충돌 방지
+            if (Regex.IsMatch(e.Name, @"_#\d+_") || isPaused) return;
 
             string fileKey = e.FullPath.ToUpperInvariant();
             string filter = (sender as FileSystemWatcher)?.Filter.ToUpperInvariant() ?? "*.*";
             var state = new FileEventState { FullPath = e.FullPath, Name = e.Name, ChangeType = e.ChangeType, Filter = filter };
 
-            // 이벤트가 올 때마다 타이머를 1초로 리셋. 1초간 잠잠해지면 Tab2TimerCallback 실행
             _tab2Timers.AddOrUpdate(fileKey,
                 key => new System.Threading.Timer(Tab2TimerCallback, state, DebounceDelayMs, Timeout.Infinite),
                 (key, oldTimer) =>
@@ -554,10 +521,7 @@ namespace ITM_Agent.ucPanel
             var state = (FileEventState)stateObj;
             string fileKey = state.FullPath.ToUpperInvariant();
 
-            if (_tab2Timers.TryRemove(fileKey, out var timer))
-            {
-                timer.Dispose();
-            }
+            if (_tab2Timers.TryRemove(fileKey, out var timer)) timer.Dispose();
 
             Task.Run(() =>
             {
@@ -572,10 +536,6 @@ namespace ITM_Agent.ucPanel
                     {
                         _logManager.LogEvent($"[Tab2] Triggered: {state.Name} -> Plugin: {pluginName}");
                         RunPlugin(pluginName, state.FullPath);
-                    }
-                    else
-                    {
-                        if (_settingsManager.IsDebugMode) _logManager.LogDebug($"[Tab2] No rule for '{mapKey}'");
                     }
                 }
                 catch (Exception ex)
@@ -596,11 +556,7 @@ namespace ITM_Agent.ucPanel
                 if (!_pluginRuntimeCache.TryGetValue(pluginName, out PluginRuntimeInfo runtimeInfo))
                 {
                     var pluginItem = _pluginPanel.GetLoadedPlugins().FirstOrDefault(p => p.PluginName.Equals(pluginName, StringComparison.OrdinalIgnoreCase));
-                    if (pluginItem == null || !File.Exists(pluginItem.AssemblyPath))
-                    {
-                        _logManager.LogError($"[ucUploadPanel] Plugin DLL not found: {pluginName}");
-                        return;
-                    }
+                    if (pluginItem == null || !File.Exists(pluginItem.AssemblyPath)) return;
 
                     try
                     {
@@ -608,11 +564,7 @@ namespace ITM_Agent.ucPanel
                         Assembly asm = Assembly.Load(dllBytes);
 
                         Type targetType = asm.GetTypes().FirstOrDefault(t => t.IsClass && !t.IsAbstract && t.GetMethods().Any(m => m.Name == "ProcessAndUpload"));
-                        if (targetType == null)
-                        {
-                            _logManager.LogError($"[ucUploadPanel] Invalid plugin class: {pluginName}");
-                            return;
-                        }
+                        if (targetType == null) return;
 
                         MethodInfo mi = targetType.GetMethod("ProcessAndUpload", new[] { typeof(string), typeof(object), typeof(object) });
                         bool requiresThreeArgs = true;
@@ -621,28 +573,13 @@ namespace ITM_Agent.ucPanel
                         {
                             mi = targetType.GetMethod("ProcessAndUpload", new[] { typeof(string), typeof(string) });
                             requiresThreeArgs = false;
-
-                            if (mi == null)
-                            {
-                                mi = targetType.GetMethod("ProcessAndUpload", new[] { typeof(string) });
-                            }
+                            if (mi == null) mi = targetType.GetMethod("ProcessAndUpload", new[] { typeof(string) });
                         }
 
-                        if (mi == null)
-                        {
-                            _logManager.LogError($"[ucUploadPanel] ProcessAndUpload method not found in {pluginName}");
-                            return;
-                        }
+                        if (mi == null) return;
 
-                        runtimeInfo = new PluginRuntimeInfo
-                        {
-                            ClassType = targetType,
-                            Method = mi,
-                            RequiresThreeArgs = requiresThreeArgs
-                        };
-
+                        runtimeInfo = new PluginRuntimeInfo { ClassType = targetType, Method = mi, RequiresThreeArgs = requiresThreeArgs };
                         _pluginRuntimeCache.TryAdd(pluginName, runtimeInfo);
-                        _logManager.LogEvent($"[ucUploadPanel] Plugin loaded and cached: {pluginName}");
                     }
                     catch (Exception ex)
                     {
@@ -654,43 +591,21 @@ namespace ITM_Agent.ucPanel
                 if (runtimeInfo != null && runtimeInfo.Method != null)
                 {
                     object pluginObj = Activator.CreateInstance(runtimeInfo.ClassType);
-
                     object[] args;
                     var parameters = runtimeInfo.Method.GetParameters();
 
-                    if (parameters.Length == 3)
-                    {
-                        args = new object[] { filePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini"), null };
-                    }
-                    else if (parameters.Length == 2)
-                    {
-                        args = new object[] { filePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini") };
-                    }
-                    else
-                    {
-                        args = new object[] { filePath };
-                    }
+                    if (parameters.Length == 3) args = new object[] { filePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini"), null };
+                    else if (parameters.Length == 2) args = new object[] { filePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini") };
+                    else args = new object[] { filePath };
 
                     Task.Run(() =>
                     {
-                        try
-                        {
-                            runtimeInfo.Method.Invoke(pluginObj, args);
-                            _logManager.LogEvent($"[ucUploadPanel] Plugin execution completed: {pluginName}");
-                        }
-                        catch (Exception ex)
-                        {
-                            string realError = ex.GetBaseException().Message;
-                            _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {realError}");
-                        }
+                        try { runtimeInfo.Method.Invoke(pluginObj, args); }
+                        catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {ex.GetBaseException().Message}"); }
                     });
                 }
             }
-            catch (Exception ex)
-            {
-                string realError = ex.GetBaseException().Message;
-                _logManager.LogError($"[ucUploadPanel] Failed to run plugin {pluginName}: {realError}");
-            }
+            catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Failed to run plugin {pluginName}: {ex.GetBaseException().Message}"); }
         }
 
         #endregion
@@ -763,7 +678,6 @@ namespace ITM_Agent.ucPanel
             InitializeComboBoxColumns();
             RefreshPluginMetadataCache();
             _pluginRuntimeCache.Clear();
-            _logManager.LogEvent("[ucUploadPanel] Plugins changed - Cache cleared.");
         }
 
         private (string Task, string Filter, bool RequiresOverride) LoadPluginMetadata(string dllPath)
@@ -790,29 +704,14 @@ namespace ITM_Agent.ucPanel
 
         private void SetControlsEnabled(bool enabled)
         {
-            if (this.InvokeRequired)
-            {
-                this.Invoke(new Action(() => SetControlsEnabled(enabled)));
-                return;
-            }
-
-            dgvCategorized.ReadOnly = !enabled;
-            btnCatAdd.Enabled = enabled;
-            btnCatRemove.Enabled = enabled;
-            btnCatSave.Enabled = enabled;
-            dgvLiveMonitoring.ReadOnly = !enabled;
-            btnLiveAdd.Enabled = enabled;
-            btnLiveRemove.Enabled = enabled;
-            btnLiveSave.Enabled = enabled;
+            if (this.InvokeRequired) { this.Invoke(new Action(() => SetControlsEnabled(enabled))); return; }
+            dgvCategorized.ReadOnly = !enabled; btnCatAdd.Enabled = enabled; btnCatRemove.Enabled = enabled; btnCatSave.Enabled = enabled;
+            dgvLiveMonitoring.ReadOnly = !enabled; btnLiveAdd.Enabled = enabled; btnLiveRemove.Enabled = enabled; btnLiveSave.Enabled = enabled;
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
-            {
-                StopWatchers();
-                if (components != null) components.Dispose();
-            }
+            if (disposing) { StopWatchers(); if (components != null) components.Dispose(); }
             base.Dispose(disposing);
         }
 
