@@ -20,7 +20,7 @@ namespace ITM_Agent.ucPanel
         private readonly LogManager logManager;
         private readonly bool isDebugMode;
 
-        private FileSystemWatcher folderWatcher;   
+        private FileSystemWatcher folderWatcher;
         public event Action<string, Color> StatusUpdated;
         public event Action<string> FileRenamed;
         private FileSystemWatcher baselineWatcher;
@@ -46,8 +46,8 @@ namespace ITM_Agent.ucPanel
             InitializeCustomEvents();
 
             LoadDataFromSettings();
-            LoadRegexFolderPaths(); 
-            LoadSelectedBaseDatePath(); 
+            LoadRegexFolderPaths();
+            LoadSelectedBaseDatePath();
 
             if (settingsManager.IsDebugMode) logManager.LogDebug("[ucOverrideNamesPanel] 생성자 호출 - 초기화 완료");
         }
@@ -250,7 +250,7 @@ namespace ITM_Agent.ucPanel
 
                 _baselineCache.Clear();
                 foreach (var kvp in newData) _baselineCache[kvp.Key] = kvp.Value;
-                
+
                 if (settingsManager.IsDebugMode) logManager.LogDebug($"[ucOverrideNamesPanel] Baseline cache refreshed. Items: {_baselineCache.Count}");
             }
         }
@@ -327,7 +327,7 @@ namespace ITM_Agent.ucPanel
             string datePattern = @"Date and Time:\s*(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2} (AM|PM))";
             const int maxRetries = 10;
             const int delayMs = 1000;
-            const int maxBytesToRead = 8192; 
+            const int maxBytesToRead = 8192;
 
             for (int i = 0; i < maxRetries; i++)
             {
@@ -481,7 +481,7 @@ namespace ITM_Agent.ucPanel
 
                     if (int.TryParse(cInfo, out int waferNum))
                     {
-                        cInfo = $"C5W{waferNum}"; 
+                        cInfo = $"C5W{waferNum}";
                     }
 
                     baselineData[fileName] = (timeInfo, prefix, cInfo);
@@ -495,7 +495,7 @@ namespace ITM_Agent.ucPanel
             if (!WaitForFileReady(targetFile, maxRetries: 10, delayMilliseconds: 300)) return null;
 
             string fileName = Path.GetFileName(targetFile);
-            
+
             // ⭐️ 대상 파일명에 존재하는 실제 동적 웨이퍼 패턴(_#13_ 등)을 정밀하게 추출
             var targetWaferMatch = Regex.Match(fileName, @"_#(\d+)_");
             if (!targetWaferMatch.Success) return null;
@@ -563,10 +563,10 @@ namespace ITM_Agent.ucPanel
 
             if (isRunning)
             {
-                RefreshBaselineCache(); 
+                RefreshBaselineCache();
                 InitializeBaselineWatcher();
                 InitializeTargetWatchers();
-                Task.Run(() => CompareAndRenameFiles()); 
+                Task.Run(() => CompareAndRenameFiles());
             }
             else
             {
