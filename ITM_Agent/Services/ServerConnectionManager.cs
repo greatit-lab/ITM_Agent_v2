@@ -28,6 +28,9 @@ namespace ITM_Agent.Services
         // 현재 상태
         private bool _isServerConnected = true;
         private bool _isRunning = false;
+        
+        // [핵심 개선] 타이머 중복 실행 방지용 플래그
+        private int _isChecking = 0;
 
         // 설정: 체크 주기 (10초)
         private const int CHECK_INTERVAL_MS = 10 * 1000;
@@ -73,6 +76,9 @@ namespace ITM_Agent.Services
         {
             if (!_isRunning) return;
 
+            // [핵심 개선] 이전 체크가 끝나지 않았다면 이번 턴은 무시 (소켓 누적 폭발 방지)
+            if (Interlocked.CompareExchange(ref _isChecking, 1, 0) == 1) return;
+
             try
             {
                 // 두 서버 상태 확인 (DB & Object Storage API)
@@ -102,11 +108,15 @@ namespace ITM_Agent.Services
             {
                 _logManager.LogError($"[ServerConnectionManager] Error during check: {ex.Message}");
             }
+            finally
+            {
+                // 체크 완료 후 플래그 해제
+                Interlocked.Exchange(ref _isChecking, 0);
+            }
         }
 
         private async Task<bool> CheckDatabaseAsync()
         {
-            // ⭐️ [핵심 추가] 프록시 모드(내부망)일 경우, 연결 끊김 검사를 무시하고 무조건 초록불(true)로 강제 통과
             if (DatabaseInfo.GetSettingsIniValue("Network", "UseProxy") == "1")
             {
                 return true;
@@ -116,22 +126,16 @@ namespace ITM_Agent.Services
             {
                 string cs = DatabaseInfo.CreateDefault().GetConnectionString();
 
-                // Pooling=false 추가 (실제 핸드셰이크 강제)
                 if (!cs.Contains("Pooling=")) cs += ";Pooling=false";
-
-                // 타임아웃 설정
                 if (!cs.Contains("Timeout=")) cs += $";Timeout={DB_TIMEOUT}";
 
                 using (var conn = new NpgsqlConnection(cs))
                 {
                     await conn.OpenAsync();
-
-                    // 실제 쿼리 실행으로 엔진 생존 확인
                     using (var cmd = new NpgsqlCommand("SELECT 1", conn))
                     {
                         await cmd.ExecuteScalarAsync();
                     }
-
                     return true;
                 }
             }
@@ -143,7 +147,6 @@ namespace ITM_Agent.Services
 
         private async Task<bool> CheckObjectStorageApiAsync()
         {
-            // ⭐️ [핵심 추가] 프록시 모드(내부망)일 경우, 연결 끊김 검사를 무시하고 무조건 초록불(true)로 강제 통과
             if (DatabaseInfo.GetSettingsIniValue("Network", "UseProxy") == "1")
             {
                 return true;
@@ -151,26 +154,25 @@ namespace ITM_Agent.Services
 
             try
             {
-                // Connection.ini의 [Ftps] 섹션에서 IP와 동적 Port를 가져옴
                 var ftpInfo = FtpsInfo.CreateDefault();
                 string host = ftpInfo.Host;
-                int port = ftpInfo.Port; // 하드코딩 제거 및 동적 포트 할당
+                int port = ftpInfo.Port; 
 
                 if (string.IsNullOrEmpty(host)) return false;
 
-                // Health Check URL 구성
                 string url = $"http://{host}:{port}/api/FileUpload/health";
 
-                // HTTP GET 요청
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // 3초 타임아웃
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                 {
-                    var response = await _httpClient.GetAsync(url, cts.Token);
-                    return response.IsSuccessStatusCode; // 200 OK면 true
+                    // [핵심 개선] HttpResponseMessage를 using으로 감싸 소켓 자원을 완벽히 반환
+                    using (var response = await _httpClient.GetAsync(url, cts.Token))
+                    {
+                        return response.IsSuccessStatusCode;
+                    }
                 }
             }
             catch
             {
-                // 연결 실패, 타임아웃, 404 등 모든 오류 시 false
                 return false;
             }
         }
