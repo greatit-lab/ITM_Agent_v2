@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Data.SqlClient; 
+using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -12,9 +12,9 @@ using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
-using Microsoft.Win32; 
+using Microsoft.Win32;
 using Npgsql;
-using System.ServiceProcess; 
+using System.ServiceProcess;
 
 namespace ITM_Agent.Services
 {
