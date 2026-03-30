@@ -242,6 +242,9 @@ namespace ITM_Agent.Services
         private bool _isInitialized = false;
 
         private static bool _sensorInfoLogged = false;
+        
+        // 성능 카운터가 고장난 OS인지 체크하는 플래그 (반복 예외 방지)
+        private static bool _isPerfCounterBroken = false;
 
         public int IntervalMs
         {
@@ -333,7 +336,6 @@ namespace ITM_Agent.Services
 
             try
             {
-                // Debug 모드가 켜져 있고, 아직 센서 정보가 로그되지 않았을 때만 상세 정보 기록
                 if (LogManager.GlobalDebugEnabled && !_sensorInfoLogged)
                 {
                     StringBuilder sensorInfo = new StringBuilder();
@@ -375,7 +377,7 @@ namespace ITM_Agent.Services
                     logManager.LogDebug(sensorInfo.ToString());
                     _sensorInfoLogged = true;
                 }
-                else // 일반 샘플링 시 업데이트만 수행
+                else
                 {
                     foreach (var hardware in computer.Hardware)
                     {
@@ -421,7 +423,6 @@ namespace ITM_Agent.Services
                               gpu.Sensors.FirstOrDefault(s => s != null && s.SensorType == SensorType.Temperature)?.Value ?? 0;
                 }
 
-                // 안전한 모든 센서 추출 LINQ 구문 적용
                 var allSensors = computer.Hardware
                     .Where(h => h != null)
                     .SelectMany(h =>
@@ -494,31 +495,35 @@ namespace ITM_Agent.Services
                         int takeCount = Math.Min(5, procInfos.Count);
                         for (int i = 0; i < takeCount; i++)
                         {
-                            long commitMB = procInfos[i].PrivateMem / (1024 * 1024); // 기존에 수집하던 커밋 크기
+                            long commitMB = procInfos[i].PrivateMem / (1024 * 1024);
                             long workingMB = procInfos[i].WorkingSet / (1024 * 1024);
                             long sharedMB = workingMB > commitMB ? workingMB - commitMB : 0;
 
-                            long privateWorkingSetMB = 0;
-                            try
+                            long privateWorkingSetMB = workingMB; // 기본값 할당
+
+                            // OS 성능 카운터가 정상이면 시도, 고장이면 기본값(workingMB) 유지
+                            if (!_isPerfCounterBroken)
                             {
-                                // 사용자용 Private Working Set 수집
-                                using (PerformanceCounter pc = new PerformanceCounter("Process", "Working Set - Private", procInfos[i].Name, true))
+                                try
                                 {
-                                    privateWorkingSetMB = pc.RawValue / (1024 * 1024);
+                                    using (PerformanceCounter pc = new PerformanceCounter("Process", "Working Set - Private", procInfos[i].Name, true))
+                                    {
+                                        privateWorkingSetMB = pc.RawValue / (1024 * 1024);
+                                    }
                                 }
-                            }
-                            catch
-                            {
-                                // 프로세스 종료 등 예외 발생 시 안전을 위해 기본 WorkingSet으로 대체
-                                privateWorkingSetMB = workingMB;
+                                catch
+                                {
+                                    _isPerfCounterBroken = true; // 최초 실패 시 이후부터는 시도 자체를 건너뜀
+                                    logManager.LogDebug("[HardwareSampler] OS Performance Counter is broken. Falling back to default WorkingSet memory.");
+                                }
                             }
 
                             topProcesses.Add(new ProcessMetric
                             {
                                 ProcessName = procInfos[i].Name,
-                                MemoryUsageMB = privateWorkingSetMB,    // 기존 컬럼 매핑: Private Working Set
+                                MemoryUsageMB = privateWorkingSetMB,    
                                 SharedMemoryUsageMB = sharedMB,
-                                CommitMemoryMB = commitMB               // 신규 컬럼 매핑: Commit Size
+                                CommitMemoryMB = commitMB               
                             });
                         }
                     }
