@@ -28,7 +28,7 @@ namespace ITM_Agent.Services
         // 현재 상태
         private bool _isServerConnected = true;
         private bool _isRunning = false;
-        
+
         // [핵심 개선] 타이머 중복 실행 방지용 플래그
         private int _isChecking = 0;
 
@@ -156,7 +156,7 @@ namespace ITM_Agent.Services
             {
                 var ftpInfo = FtpsInfo.CreateDefault();
                 string host = ftpInfo.Host;
-                int port = ftpInfo.Port; 
+                int port = ftpInfo.Port;
 
                 if (string.IsNullOrEmpty(host)) return false;
 
