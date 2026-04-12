@@ -33,7 +33,7 @@ namespace ITM_Agent.Services
             RegexOptions.Compiled);
 
         // ─────────────────────────────────────────────────────────────
-        // [신규] 로그 유지보수(압축/삭제)를 위한 정적 멤버
+        // 로그 유지보수(압축/삭제)를 위한 정적 멤버
         // ─────────────────────────────────────────────────────────────
         private static Timer _maintenanceTimer;
         private static readonly object _maintenanceLock = new object();
@@ -45,7 +45,7 @@ namespace ITM_Agent.Services
             logFolderPath = Path.Combine(baseDir, "Logs");
             Directory.CreateDirectory(logFolderPath);
 
-            // [신규] 유지보수 타이머 시작 (앱 실행 중 최초 1회만 기동)
+            // 유지보수 타이머 시작 (앱 실행 중 최초 1회만 기동)
             StartMaintenanceTimer(logFolderPath);
         }
 
@@ -94,7 +94,7 @@ namespace ITM_Agent.Services
                     catch { /* 사용 중이거나 권한 없음 - 무시 */ }
                 }
 
-                // 2. 로그 파일 압축 (Compression)
+                // 2. 로그 파일 압축 (Compression) 및 원본 삭제
                 //    대상: .log 파일 중
                 //      A) 오늘 날짜가 아닌 파일 (과거 로그)
                 //      B) 오늘 날짜라도 회전된 파일 (_1, _2 등)
@@ -118,11 +118,10 @@ namespace ITM_Agent.Services
                         {
                             string zipPath = Path.Combine(targetDir, fileNameNoExt + ".zip");
 
-                            // 이미 압축 파일이 있으면 덮어쓰거나 건너뜀 (여기선 생성 시도)
+                            // [핵심 수정] 
+                            // 1단계: 압축 파일이 없다면 생성
                             if (!File.Exists(zipPath))
                             {
-                                // ▼▼▼ [수정] ZipFile(CS0103 오류 원인) 대신 ZipArchive 사용 ▼▼▼
-                                // 이 방식은 추가 참조 없이 기본 System.IO.Compression만으로 동작합니다.
                                 using (var zipStream = new FileStream(zipPath, FileMode.Create))
                                 using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create))
                                 {
@@ -136,16 +135,19 @@ namespace ITM_Agent.Services
                                         sourceStream.CopyTo(entryStream);
                                     }
                                 }
-                                // ▲▲▲ 수정 끝 ▲▲▲
+                            }
 
-                                // 압축 성공 시 원본 삭제
+                            // 2단계: 압축 파일이 존재하면 원본 로그 삭제 
+                            // (방금 생성했거나, 이전 주기에 생성 후 삭제만 실패했던 경우 모두 커버)
+                            if (File.Exists(zipPath))
+                            {
                                 File.Delete(logFile);
                             }
                         }
                     }
                     catch
                     {
-                        // 압축 중 오류(파일 잠김 등) 발생 시 다음 주기에 처리
+                        // 압축 또는 삭제 중 오류(파일 잠김 등) 발생 시 다음 주기에 재처리됨
                     }
                 }
             }
@@ -156,7 +158,7 @@ namespace ITM_Agent.Services
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 기존 로깅 메서드 (변경 없음)
+        // 기존 로깅 메서드
         // ─────────────────────────────────────────────────────────────
 
         public void LogEvent(string message)
