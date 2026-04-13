@@ -102,7 +102,7 @@ namespace ITM_Agent.Services
                 using (var conn = new NpgsqlConnection(cs))
                 {
                     await conn.OpenAsync();
-                    await EnsureSchemaAsync(conn); 
+                    await EnsureSchemaAsync(conn);
 
                     DateTime now = DateTime.Now;
                     DateTime cleanTime = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, now.Second);
@@ -223,7 +223,7 @@ namespace ITM_Agent.Services
                 {
                     _logManager.LogEvent($"[ConfigUpdateService] Sending dynamic IP change command to Proxy ({proxyIp})...");
                     bool proxyUpdated = await SendIpChangeCommandToProxyAsync(proxyIp, newDbHost);
-                    
+
                     if (!proxyUpdated)
                     {
                         _logManager.LogError("[ConfigUpdateService] CRITICAL: Proxy IP update failed. Aborting agent update to prevent network isolation.");
