@@ -20,7 +20,6 @@ namespace ITM_Agent.Services
         private bool isRunning = false;
         private bool isPaused = false;
 
-        // [핵심 개선] 제외 폴더 캐싱 (성능 및 정확성 향상)
         private readonly List<string> _cachedExcludeFolders = new List<string>();
 
         private readonly Dictionary<string, FileTrackingInfo> trackedFiles = new Dictionary<string, FileTrackingInfo>(StringComparer.OrdinalIgnoreCase);
@@ -28,6 +27,9 @@ namespace ITM_Agent.Services
         private readonly object trackingLock = new object();
         private const int StabilityCheckIntervalMs = 1000;
         private const double FileStableThresholdSeconds = 5.0;
+
+        // [추가] 과거 파일 무시 임계값 (장비 시간 오차 -6분 21초를 넉넉히 커버하고, 에이전트 일시 중지 상황을 대비해 24시간으로 설정)
+        private readonly TimeSpan MaxFileAge = TimeSpan.FromHours(24);
 
         private class FileTrackingInfo
         {
@@ -78,14 +80,12 @@ namespace ITM_Agent.Services
         {
             StopWatchers();
 
-            // [핵심 개선] 감시 시작 시 제외 폴더(ExcludeFolders) 목록을 캐싱 및 정규화
             _cachedExcludeFolders.Clear();
             var excludes = settingsManager.GetFoldersFromSection("[ExcludeFolders]");
             foreach (var ex in excludes)
             {
                 try
                 {
-                    // 디렉토리 구분자를 확실히 추가하여 "C:\Target\Exclude"와 "C:\Target\ExcludeABC"가 오작동하지 않도록 방지
                     string norm = Path.GetFullPath(ex).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
                     _cachedExcludeFolders.Add(norm);
                 }
@@ -178,7 +178,6 @@ namespace ITM_Agent.Services
             logManager.LogEvent("[FileWatcherManager] File monitoring stopped.");
         }
 
-        // [추가] 파일이 제외 폴더 하위에 있는지 검사하는 최적화 메서드
         private bool IsExcluded(string filePath)
         {
             if (_cachedExcludeFolders.Count == 0) return false;
@@ -191,7 +190,6 @@ namespace ITM_Agent.Services
 
                 foreach (var exclude in _cachedExcludeFolders)
                 {
-                    // 디렉토리 경계가 정확히 일치하는 상위/하위 관계만 필터링
                     if (normalizedCurrentDir.StartsWith(exclude, StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
@@ -206,18 +204,23 @@ namespace ITM_Agent.Services
         {
             if (!isRunning || isPaused) return;
 
-            // [핵심 개선] 매 이벤트마다 INI를 읽지 않고 캐시된 리스트를 사용하여 경로 엄격 비교
             if (IsExcluded(e.FullPath)) return;
-
             if (IsDuplicateEvent(e.FullPath)) return;
 
             try
             {
+                DateTime now = DateTime.UtcNow;
+                DateTime currentWriteTime = GetLastWriteTimeSafe(e.FullPath);
+
+                // [핵심 개선] 외부 요인(백신, 단순 조회)으로 인해 과거 파일의 Changed 이벤트가 발생하는 것 차단
+                if (currentWriteTime != DateTime.MinValue && (now - currentWriteTime) > MaxFileAge)
+                {
+                    return;
+                }
+
                 lock (trackingLock)
                 {
-                    DateTime now = DateTime.UtcNow;
                     long currentSize = GetFileSizeSafe(e.FullPath);
-                    DateTime currentWriteTime = GetLastWriteTimeSafe(e.FullPath);
 
                     if (currentSize == 0 && e.ChangeType == WatcherChangeTypes.Changed) return;
 
@@ -341,6 +344,8 @@ namespace ITM_Agent.Services
 
                     var targetFolders = settingsManager.GetFoldersFromSection("[TargetFolders]");
                     int totalProcessed = 0;
+                    int ignoredOldFiles = 0;
+                    DateTime now = DateTime.UtcNow;
 
                     foreach (var folder in targetFolders)
                     {
@@ -350,10 +355,16 @@ namespace ITM_Agent.Services
                         {
                             if (isPaused) break;
 
-                            // [핵심 개선] 통합된 캐시 기반 제외 폴더 검사 사용
                             if (IsExcluded(filePath)) continue;
-
                             if (IsDuplicateEvent(filePath)) continue;
+
+                            // [핵심 개선] 에이전트 설치 이전(3월 등)의 과거 데이터가 복구 스캔에 휩쓸려 수집되는 현상 방어
+                            DateTime lastWriteTime = GetLastWriteTimeSafe(filePath);
+                            if (lastWriteTime != DateTime.MinValue && (now - lastWriteTime) > MaxFileAge)
+                            {
+                                ignoredOldFiles++;
+                                continue;
+                            }
 
                             if (IsFileReady(filePath))
                             {
@@ -382,7 +393,7 @@ namespace ITM_Agent.Services
                             }
                         }
                     }
-                    logManager.LogEvent($"[Recovery] Scan completed. Processed: {totalProcessed} files.");
+                    logManager.LogEvent($"[Recovery] Scan completed. Processed: {totalProcessed} files. Ignored old files: {ignoredOldFiles}");
                 }
                 catch (Exception ex)
                 {
