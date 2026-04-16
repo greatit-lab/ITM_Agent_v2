@@ -28,8 +28,8 @@ namespace ITM_Agent.Services
         private const int StabilityCheckIntervalMs = 1000;
         private const double FileStableThresholdSeconds = 5.0;
 
-        // [추가] 과거 파일 무시 임계값 (장비 시간 오차 -6분 21초를 넉넉히 커버하고, 에이전트 일시 중지 상황을 대비해 24시간으로 설정)
-        private readonly TimeSpan MaxFileAge = TimeSpan.FromHours(24);
+        // [수정] 과거 파일 무시 임계값 (장비 시간 오차를 커버하고 불필요한 과거 데이터 수집을 방지하기 위해 12시간으로 설정)
+        private readonly TimeSpan MaxFileAge = TimeSpan.FromHours(12);
 
         private class FileTrackingInfo
         {
@@ -358,7 +358,7 @@ namespace ITM_Agent.Services
                             if (IsExcluded(filePath)) continue;
                             if (IsDuplicateEvent(filePath)) continue;
 
-                            // [핵심 개선] 에이전트 설치 이전(3월 등)의 과거 데이터가 복구 스캔에 휩쓸려 수집되는 현상 방어
+                            // [핵심 개선] 에이전트 설치 이전의 과거 데이터가 복구 스캔에 휩쓸려 수집되는 현상 방어
                             DateTime lastWriteTime = GetLastWriteTimeSafe(filePath);
                             if (lastWriteTime != DateTime.MinValue && (now - lastWriteTime) > MaxFileAge)
                             {
