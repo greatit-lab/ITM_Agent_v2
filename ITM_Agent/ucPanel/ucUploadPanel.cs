@@ -621,13 +621,13 @@ namespace ITM_Agent.ucPanel
                     // [개선] Task.Run 껍데기 제거.
                     // 상위 타이머 콜백에서 이미 Task.Run 비동기 상태로 진입했으므로
                     // 동기적으로 Invoke해야 finally 블록이 플러그인 처리 완료 시점까지 정확하게 대기합니다.
-                    try 
-                    { 
-                        runtimeInfo.Method.Invoke(pluginObj, args); 
+                    try
+                    {
+                        runtimeInfo.Method.Invoke(pluginObj, args);
                     }
-                    catch (Exception ex) 
-                    { 
-                        _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {ex.GetBaseException().Message}"); 
+                    catch (Exception ex)
+                    {
+                        _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {ex.GetBaseException().Message}");
                     }
                 }
             }
