@@ -33,6 +33,9 @@ namespace ITM_Agent.ucPanel
         private readonly ConcurrentDictionary<string, System.Threading.Timer> _tab2Timers = new ConcurrentDictionary<string, System.Threading.Timer>(StringComparer.OrdinalIgnoreCase);
         private const int DebounceDelayMs = 1000; // 1초 대기
 
+        // [핵심 개선] 현재 처리 중인 파일을 추적하여 플러그인 중복 다중 실행 방지
+        private readonly ConcurrentDictionary<string, bool> _activeProcessingFiles = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
         private readonly ucConfigurationPanel _configPanel;
         private readonly ucPluginPanel _pluginPanel;
         private readonly SettingsManager _settingsManager;
@@ -422,7 +425,8 @@ namespace ITM_Agent.ucPanel
                 foreach (var t in _tab2Timers.Values) { try { t.Dispose(); } catch { } }
                 _tab2Timers.Clear();
             }
-            _logManager.LogEvent("[ucUploadPanel] All watchers and timers stopped.");
+            _activeProcessingFiles.Clear();
+            _logManager.LogEvent("[ucUploadPanel] All watchers, timers, and locks stopped.");
         }
 
         #endregion
@@ -474,6 +478,9 @@ namespace ITM_Agent.ucPanel
 
             if (_tab1Timers.TryRemove(fileKey, out var timer)) timer.Dispose();
 
+            // [개선] 현재 처리 중인 파일이면 중복 진입 방지
+            if (!_activeProcessingFiles.TryAdd(fileKey, true)) return;
+
             Task.Run(() =>
             {
                 try
@@ -493,6 +500,11 @@ namespace ITM_Agent.ucPanel
                 catch (Exception ex)
                 {
                     _logManager.LogError($"[Tab1] Error processing file {state.Name}: {ex.Message}");
+                }
+                finally
+                {
+                    // [개선] 처리 완료 후 락 해제
+                    _activeProcessingFiles.TryRemove(fileKey, out _);
                 }
             });
         }
@@ -523,6 +535,9 @@ namespace ITM_Agent.ucPanel
 
             if (_tab2Timers.TryRemove(fileKey, out var timer)) timer.Dispose();
 
+            // [개선] 현재 처리 중인 파일이면 중복 진입 방지
+            if (!_activeProcessingFiles.TryAdd(fileKey, true)) return;
+
             Task.Run(() =>
             {
                 try
@@ -541,6 +556,11 @@ namespace ITM_Agent.ucPanel
                 catch (Exception ex)
                 {
                     _logManager.LogError($"[Tab2] Error processing file {state.Name}: {ex.Message}");
+                }
+                finally
+                {
+                    // [개선] 처리 완료 후 락 해제
+                    _activeProcessingFiles.TryRemove(fileKey, out _);
                 }
             });
         }
@@ -598,11 +618,17 @@ namespace ITM_Agent.ucPanel
                     else if (parameters.Length == 2) args = new object[] { filePath, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Settings.ini") };
                     else args = new object[] { filePath };
 
-                    Task.Run(() =>
-                    {
-                        try { runtimeInfo.Method.Invoke(pluginObj, args); }
-                        catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {ex.GetBaseException().Message}"); }
-                    });
+                    // [개선] Task.Run 껍데기 제거.
+                    // 상위 타이머 콜백에서 이미 Task.Run 비동기 상태로 진입했으므로
+                    // 동기적으로 Invoke해야 finally 블록이 플러그인 처리 완료 시점까지 정확하게 대기합니다.
+                    try 
+                    { 
+                        runtimeInfo.Method.Invoke(pluginObj, args); 
+                    }
+                    catch (Exception ex) 
+                    { 
+                        _logManager.LogError($"[ucUploadPanel] Plugin execution failed: {pluginName}. Error: {ex.GetBaseException().Message}"); 
+                    }
                 }
             }
             catch (Exception ex) { _logManager.LogError($"[ucUploadPanel] Failed to run plugin {pluginName}: {ex.GetBaseException().Message}"); }
