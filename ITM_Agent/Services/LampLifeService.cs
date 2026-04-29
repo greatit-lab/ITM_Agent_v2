@@ -40,7 +40,8 @@ namespace ITM_Agent.Services
         // [핵심 개선] DB 싱크 중복 실행 차단용 플래그
         private int _isSyncing = 0;
 
-        private const int UPDATE_INTERVAL_MS = 60 * 60 * 1000; // 1시간
+        // [테스트 변경] 스케줄링 주기를 5분으로 임시 변경
+        private const int UPDATE_INTERVAL_MS = 5 * 60 * 1000; // 5분
 
         public event Action<bool, DateTime> CollectionCompleted;
 
@@ -183,7 +184,6 @@ namespace ITM_Agent.Services
 
         private async Task SyncWithEquipmentDatabaseAsync(bool isInitialMapping)
         {
-            // [핵심 개선] 중복 실행 방지
             if (Interlocked.CompareExchange(ref _isSyncing, 1, 0) == 1) return;
 
             try
@@ -253,8 +253,8 @@ namespace ITM_Agent.Services
                 await pgConn.OpenAsync();
                 string eqpid = _settingsManager.GetEqpid();
 
-                var currentData = new List<(string LampName, int? LampNo, DateTime? LastChanged)>();
-                using (var cmd = new NpgsqlCommand("SELECT lamp_name, lamp_no, last_changed FROM public.eqp_lamp_life WHERE eqpid = @eqpid", pgConn))
+                var currentData = new List<(string LampName, int? LampNo, DateTime? LastChanged, int AgeHour, int? OffsetHour)>();
+                using (var cmd = new NpgsqlCommand("SELECT lamp_name, lamp_no, last_changed, age_hour, offset_hour FROM public.eqp_lamp_life WHERE eqpid = @eqpid", pgConn))
                 {
                     cmd.Parameters.AddWithValue("@eqpid", eqpid);
                     using (var reader = await cmd.ExecuteReaderAsync())
@@ -264,7 +264,9 @@ namespace ITM_Agent.Services
                             currentData.Add((
                                 reader.GetString(0),
                                 reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1),
-                                reader.IsDBNull(2) ? (DateTime?)null : reader.GetDateTime(2)
+                                reader.IsDBNull(2) ? (DateTime?)null : reader.GetDateTime(2),
+                                reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                                reader.IsDBNull(4) ? (int?)null : reader.GetInt32(4)
                             ));
                         }
                     }
@@ -293,22 +295,52 @@ namespace ITM_Agent.Services
                         {
                             var latestLog = mssqlLogs.Where(m => m.LampID == pgRow.LampNo.Value).OrderByDescending(m => m.LogTime).FirstOrDefault();
 
-                            if (latestLog.LampID > 0 && (!pgRow.LastChanged.HasValue || latestLog.LogTime > pgRow.LastChanged.Value))
+                            if (latestLog.LampID > 0)
                             {
-                                int newAge = (int)(DateTime.Now - latestLog.LogTime).TotalHours;
-                                DateTime cleanLastChanged = TruncateToSeconds(latestLog.LogTime);
+                                DateTime cleanMssqlLog = TruncateToSeconds(latestLog.LogTime);
                                 DateTime cleanAgentTime = TruncateToSeconds(DateTime.Now);
 
-                                string updateSql = @"UPDATE public.eqp_lamp_life SET last_changed = @last_changed, age_hour = @age, ts = @ts, serv_ts = NOW()::timestamp(0) WHERE eqpid = @eqpid AND lamp_no = @no";
-                                using (var updateCmd = new NpgsqlCommand(updateSql, pgConn))
+                                int mathAge = (int)(cleanAgentTime - cleanMssqlLog).TotalHours;
+
+                                bool shouldUpdate = true;
+                                DateTime newLastChanged = pgRow.LastChanged ?? cleanMssqlLog;
+                                int newAge = pgRow.AgeHour; // 기본적으로 기존 age_hour 유지
+                                int? newOffset = pgRow.OffsetHour;
+
+                                // Case B: 새 램프 교체 감지 (age_hour 와 offset_hour 모두 0으로 초기화)
+                                if (!pgRow.LastChanged.HasValue || cleanMssqlLog > pgRow.LastChanged.Value)
                                 {
-                                    updateCmd.Parameters.AddWithValue("@last_changed", cleanLastChanged);
-                                    updateCmd.Parameters.AddWithValue("@age", newAge);
-                                    updateCmd.Parameters.AddWithValue("@ts", cleanAgentTime);
-                                    updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
-                                    updateCmd.Parameters.AddWithValue("@no", pgRow.LampNo.Value);
-                                    await updateCmd.ExecuteNonQueryAsync();
-                                    _logManager.LogEvent($"[LampLifeService] Updated '{pgRow.LampName}' (ID:{pgRow.LampNo}) : Changed {cleanLastChanged}");
+                                    newLastChanged = cleanMssqlLog;
+                                    newAge = 0;
+                                    newOffset = 0;
+                                    _logManager.LogEvent($"[LampLifeService] New Lamp Replaced! '{pgRow.LampName}' Age and Offset Reset to 0.");
+                                }
+                                // Case A-1: 최초 스케줄러 동작 시 Offset 계산 (age_hour는 기존 유지)
+                                else if (!pgRow.OffsetHour.HasValue)
+                                {
+                                    newOffset = pgRow.AgeHour - mathAge;
+                                    _logManager.LogEvent($"[LampLifeService] Offset Calculated for '{pgRow.LampName}': UI({pgRow.AgeHour}) - Math({mathAge}) = {newOffset}");
+                                }
+                                
+                                if (shouldUpdate)
+                                {
+                                    string updateSql = @"UPDATE public.eqp_lamp_life 
+                                                         SET last_changed = @last_changed, 
+                                                             age_hour = @age, 
+                                                             offset_hour = @offset, 
+                                                             ts = @ts, 
+                                                             serv_ts = timezone('Asia/Seoul', NOW())::timestamp(0) 
+                                                         WHERE eqpid = @eqpid AND lamp_no = @no";
+                                    using (var updateCmd = new NpgsqlCommand(updateSql, pgConn))
+                                    {
+                                        updateCmd.Parameters.AddWithValue("@last_changed", newLastChanged);
+                                        updateCmd.Parameters.AddWithValue("@age", newAge);
+                                        updateCmd.Parameters.AddWithValue("@offset", newOffset.HasValue ? (object)newOffset.Value : DBNull.Value);
+                                        updateCmd.Parameters.AddWithValue("@ts", cleanAgentTime);
+                                        updateCmd.Parameters.AddWithValue("@eqpid", eqpid);
+                                        updateCmd.Parameters.AddWithValue("@no", pgRow.LampNo.Value);
+                                        await updateCmd.ExecuteNonQueryAsync();
+                                    }
                                 }
                             }
                         }
@@ -451,6 +483,9 @@ namespace ITM_Agent.Services
                                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='lamp_no') THEN
                                     ALTER TABLE public.eqp_lamp_life ADD COLUMN lamp_no INTEGER NULL;
                                 END IF;
+                                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='eqp_lamp_life' AND column_name='offset_hour') THEN
+                                    ALTER TABLE public.eqp_lamp_life ADD COLUMN offset_hour INTEGER NULL;
+                                END IF;
                             END $$;";
                         cmd.ExecuteNonQuery();
                     }
@@ -474,15 +509,16 @@ namespace ITM_Agent.Services
                 {
                     const string sql = @"
                         INSERT INTO public.eqp_lamp_life 
-                            (eqpid, lamp_name, ts, age_hour, lifespan_hour, last_changed, serv_ts)
+                            (eqpid, lamp_name, ts, age_hour, lifespan_hour, last_changed, offset_hour, serv_ts)
                         VALUES 
-                            (@eqpid, @name, @ts, @age, @life, @changed, NOW()::timestamp(0))
+                            (@eqpid, @name, @ts, @age, @life, @changed, NULL, timezone('Asia/Seoul', NOW())::timestamp(0))
                         ON CONFLICT (eqpid, lamp_name) DO UPDATE SET
                             ts = EXCLUDED.ts,
                             age_hour = EXCLUDED.age_hour,
                             lifespan_hour = EXCLUDED.lifespan_hour,
                             last_changed = EXCLUDED.last_changed,
-                            serv_ts = NOW()::timestamp(0);";
+                            offset_hour = NULL,
+                            serv_ts = timezone('Asia/Seoul', NOW())::timestamp(0);";
 
                     using (var cmd = new NpgsqlCommand(sql, conn, tx))
                     {
