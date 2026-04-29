@@ -321,7 +321,7 @@ namespace ITM_Agent.Services
                                     newOffset = pgRow.AgeHour - mathAge;
                                     _logManager.LogEvent($"[LampLifeService] Offset Calculated for '{pgRow.LampName}': UI({pgRow.AgeHour}) - Math({mathAge}) = {newOffset}");
                                 }
-                                
+
                                 if (shouldUpdate)
                                 {
                                     string updateSql = @"UPDATE public.eqp_lamp_life 
